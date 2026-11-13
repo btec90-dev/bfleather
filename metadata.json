@@ -1,0 +1,6 @@
+{
+  "name": "B&F Parcours PMA",
+  "description": "Calendrier Directeur et Suivi de Protocole PMA pour Fatou (RMA New York)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
