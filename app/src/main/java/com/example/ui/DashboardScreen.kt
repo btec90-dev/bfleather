@@ -9,6 +9,11 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -37,14 +42,21 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import android.net.Uri
 import com.example.R
 import com.example.alarm.AlarmScheduler
+import com.example.data.AudioMemoController
 import com.example.data.CloudSyncSummary
+import com.example.data.DateSortUtils
 import com.example.data.PmaRepository
+import com.example.data.SyncedAppointmentItem
+import com.example.data.SyncedCareProvider
+import com.example.data.SyncedChecklistItem
 import com.example.data.SyncedMedReminder
 import com.example.data.SyncedMedicalDocItem
 import com.example.data.SyncedNoteItem
@@ -57,6 +69,7 @@ import com.example.data.WalletSyncStatus
 import com.example.i18n.AppLanguage
 import com.example.i18n.Strings
 import com.example.ui.theme.ThemeColors
+import com.example.ui.theme.getCategoryBadgeColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -109,6 +122,8 @@ fun DashboardScreen(
   syncSummary: CloudSyncSummary,
   tasks: List<TaskItem>,
   protocolSteps: List<SyncedProtocolStep>,
+  appointments: List<SyncedAppointmentItem> = emptyList(),
+  checklists: List<SyncedChecklistItem> = emptyList(),
   medReminders: List<SyncedMedReminder>,
   profile: SyncedUserProfile,
   notes: List<SyncedNoteItem>,
@@ -116,6 +131,16 @@ fun DashboardScreen(
   voiceMemos: List<SyncedVoiceMemo>,
   walletCards: List<SyncedWalletCard>,
   walletSyncStatus: WalletSyncStatus,
+  externalOpenWalletCardId: String? = null,
+  onClearExternalWalletCard: () -> Unit = {},
+  onUpdateWalletPin: (String) -> Unit = {},
+  onLogExpenseFromCard: (SyncedWalletCard) -> Unit = {},
+  onUpdateStageViewMode: (String, Boolean?) -> Unit = { _, _ -> },
+  onToggleMedDose: (SyncedMedReminder, String, String) -> Unit = { _, _, _ -> },
+  onRefillMedPills: (String, Long) -> Unit = { _, _ -> },
+  onSaveChecklistItem: (SyncedChecklistItem) -> Unit = {},
+  onToggleChecklistItem: (String, Boolean) -> Unit = { _, _ -> },
+  onDeleteChecklistItem: (String) -> Unit = {},
   onInitiateSync: () -> Unit,
   onTaskToggled: (TaskItem) -> Unit,
   onTaskAdded: (TaskItem) -> Unit,
@@ -134,6 +159,10 @@ fun DashboardScreen(
   onSeedSampleWalletCards: () -> Unit,
   onNavigateToProtocol: () -> Unit,
   onNavigateToPregnancy: () -> Unit,
+  onNavigateToSettings: () -> Unit,
+  onNavigateToPhoneBook: () -> Unit = {},
+  careProviders: List<SyncedCareProvider> = emptyList(),
+  onSaveCareProvider: (SyncedCareProvider) -> Unit = {},
   theme: ThemeColors,
   language: AppLanguage
 ) {
@@ -141,8 +170,18 @@ fun DashboardScreen(
   val clipboardManager = LocalClipboardManager.current
   val listState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
+  val activePartner = profile.activePartnerProfile
+  val todayKey = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) }
+  val audioController = remember(context) { AudioMemoController(context) }
+
+  DisposableEffect(audioController) {
+    onDispose {
+      audioController.releaseAll()
+    }
+  }
 
   var showAddDialog by remember { mutableStateOf(false) }
+  var showAddContactDialog by remember { mutableStateOf(false) }
   var editingTaskId by remember { mutableStateOf<String?>(null) }
   var showVaultDialog by remember { mutableStateOf(false) }
   var showEditDueDateDialog by remember { mutableStateOf(false) }
@@ -214,7 +253,37 @@ fun DashboardScreen(
   var memoTab by remember { mutableIntStateOf(0) }
   var isRecordingVoice by remember { mutableStateOf(false) }
   var recordingSeconds by remember { mutableIntStateOf(0) }
+  var activeRecordingMemoId by remember { mutableStateOf("") }
   var playingMemoId by remember { mutableStateOf<String?>(null) }
+
+  val recordAudioLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { granted ->
+    if (granted) {
+      val id = "vm_${System.currentTimeMillis()}"
+      if (audioController.startRecording(id)) {
+        activeRecordingMemoId = id
+        isRecordingVoice = true
+        Toast.makeText(
+          context,
+          if (language == AppLanguage.FR) "🎤 Enregistrement audio démarré (max 30s)" else "🎤 Audio recording started (max 30s)",
+          Toast.LENGTH_SHORT
+        ).show()
+      } else {
+        Toast.makeText(
+          context,
+          if (language == AppLanguage.FR) "Impossible d'accéder au microphone" else "Unable to access microphone",
+          Toast.LENGTH_SHORT
+        ).show()
+      }
+    } else {
+      Toast.makeText(
+        context,
+        if (language == AppLanguage.FR) "Permission microphone refusée" else "Microphone permission denied",
+        Toast.LENGTH_SHORT
+      ).show()
+    }
+  }
 
   var showEditNoteDialog by remember { mutableStateOf(false) }
   var editingNoteId by remember { mutableStateOf<String?>(null) }
@@ -232,17 +301,25 @@ fun DashboardScreen(
         delay(1000L)
         recordingSeconds++
       }
-      if (recordingSeconds >= 30) {
+      if (isRecordingVoice && recordingSeconds >= 30) {
         isRecordingVoice = false
+        val (duration, b64) = audioController.stopRecording()
+        val id = activeRecordingMemoId.ifBlank { "vm_${System.currentTimeMillis()}" }
         onSaveVoiceMemo(
           SyncedVoiceMemo(
-            id = "vm_${System.currentTimeMillis()}",
-            title = "Mémo Consultation (${recordingSeconds}s)",
-            durationSec = recordingSeconds.toLong(),
-            timestampText = formatNowFr()
+            id = id,
+            title = if (language == AppLanguage.FR) "Mémo Consultation (${duration}s)" else "Consultation Memo (${duration}s)",
+            durationSec = duration,
+            timestampText = formatNowFr(),
+            audioBase64 = b64,
+            addedBy = activePartner
           )
         )
-        Toast.makeText(context, "🎤 Mémo vocal de 30 secondes enregistré avec succès !", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+          context,
+          if (language == AppLanguage.FR) "🎤 Mémo vocal de ${duration}s enregistré !" else "🎤 ${duration}s voice memo saved!",
+          Toast.LENGTH_SHORT
+        ).show()
       }
     }
   }
@@ -257,8 +334,16 @@ fun DashboardScreen(
   var enableAlarm by remember { mutableStateOf(true) }
   var alarmOffsetMinutes by remember { mutableIntStateOf(15) }
 
-  val upcomingTasks = tasks.filter { !it.isCompleted }
-  val pastTasks = tasks.filter { it.isCompleted }
+  val partitionedTasks = remember(tasks, currentEpochTime) {
+    DateSortUtils.partitionUpcomingFirst(
+      items = tasks,
+      nowMillis = currentEpochTime,
+      epochProvider = { DateSortUtils.taskEpochMillis(it) },
+      completedProvider = { it.isCompleted }
+    )
+  }
+  val upcomingTasks = partitionedTasks.upcoming
+  val pastTasks = partitionedTasks.past
 
   // Date & Time Picker launcher for due date and gestational progress
   val openCalendarTimePicker: () -> Unit = {
@@ -382,8 +467,45 @@ fun DashboardScreen(
           .background(theme.background)
           .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(top = 4.dp, bottom = if (walletCards.isEmpty()) 255.dp else 235.dp)
+        contentPadding = PaddingValues(top = 4.dp, bottom = 120.dp)
       ) {
+        // 0. Digital Wallet Stack at the Top (Above RMA of New York Cabinet East Side)
+        item {
+          DigitalWalletStackSection(
+            userId = userId,
+            cards = walletCards,
+            syncStatus = walletSyncStatus,
+            onSaveCard = onSaveWalletCard,
+            onDeleteCard = onDeleteWalletCard,
+            onSeedSampleCards = onSeedSampleWalletCards,
+            theme = theme,
+            language = language,
+            isAnchoredBottomDock = false,
+            isExpanded = isWalletExpanded,
+            onToggleExpanded = { isWalletExpanded = !isWalletExpanded },
+            walletPin = profile.walletPin,
+            userEmail = userEmail,
+            externalOpenCardId = externalOpenWalletCardId,
+            onClearExternalOpenCard = onClearExternalWalletCard,
+            onUpdateWalletPin = onUpdateWalletPin,
+            onLogExpenseFromCard = onLogExpenseFromCard,
+            modifier = Modifier.fillMaxWidth()
+          )
+        }
+
+        // 0B. Rolling 3-Slot Live Countdown Queue directly below the Digital Wallet
+        item {
+          RollingCountdownQueueSection(
+            lang = language,
+            protocolSteps = protocolSteps,
+            appointments = appointments,
+            tasks = tasks,
+            onSlotClick = { item ->
+              if (item.sourceType == "PROTOCOL") onNavigateToProtocol() else onNavigateToPregnancy()
+            }
+          )
+        }
+
         // 1. Patient Profile Header
         item {
           Surface(
@@ -411,7 +533,7 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                   Text(
-                    text = "Dossier : ${PmaRepository.dossierId}",
+                    text = "${if (language == AppLanguage.FR) "Dossier" else "File"} : ${PmaRepository.dossierId}",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = theme.mutedText,
@@ -436,7 +558,9 @@ fun DashboardScreen(
                   modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                   style = MaterialTheme.typography.labelSmall,
                   color = Color(0xFF16A34A),
-                  fontWeight = FontWeight.Medium
+                  fontWeight = FontWeight.Medium,
+                  maxLines = 1,
+                  softWrap = false
                 )
               }
             }
@@ -517,29 +641,122 @@ fun DashboardScreen(
         }
       }
 
-      // 1A. SYNC STATUS DASHBOARD CARD (Live Cloud Telemetry & Manual Cloud Fetch)
+      // 1A-2. FERTILITY PROTOCOL / PREGNANCY STAGE SWITCHER & PROGRESS CARD
       item {
-        SyncStatusDashboardCard(
-          userEmail = userEmail,
-          syncSummary = syncSummary,
-          onInitiateSync = onInitiateSync,
-          theme = theme,
-          language = language
-        )
+        val isPregMode = profile.stageViewMode == "PREGNANCY"
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = theme.cardSurface,
+            border = BorderStroke(1.dp, theme.border),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                FilterChip(
+                  selected = !isPregMode,
+                  onClick = { onUpdateStageViewMode("IVF", null) },
+                  label = {
+                    Text(
+                      text = Strings.t("stage_mode_ivf", language),
+                      maxLines = 1,
+                      softWrap = false,
+                      style = MaterialTheme.typography.labelSmall
+                    )
+                  }
+                )
+                FilterChip(
+                  selected = isPregMode,
+                  onClick = { onUpdateStageViewMode("PREGNANCY", null) },
+                  label = {
+                    Text(
+                      text = Strings.t("stage_mode_preg", language),
+                      maxLines = 1,
+                      softWrap = false,
+                      style = MaterialTheme.typography.labelSmall
+                    )
+                  }
+                )
+              }
+              FilterChip(
+                selected = profile.isBetaHcgConfirmed,
+                onClick = { onUpdateStageViewMode(profile.stageViewMode, !profile.isBetaHcgConfirmed) },
+                label = {
+                  Text(
+                    text = if (profile.isBetaHcgConfirmed) {
+                      if (language == AppLanguage.FR) "Bêta-hCG +" else "Beta-hCG +"
+                    } else {
+                      if (language == AppLanguage.FR) "Attente Bêta" else "Awaiting Beta"
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    style = MaterialTheme.typography.labelSmall
+                  )
+                }
+              )
+              FilterChip(
+                selected = false,
+                onClick = onNavigateToPhoneBook,
+                leadingIcon = {
+                  Text("📞", fontSize = 12.sp)
+                },
+                label = {
+                  Text(
+                    text = if (language == AppLanguage.FR) "Répertoire" else "Contacts",
+                    maxLines = 1,
+                    softWrap = false,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold
+                  )
+                }
+              )
+            }
+          }
+
+          if (!isPregMode) {
+            ProtocolCycleProgressCard(
+              protocolSteps = protocolSteps,
+              onNavigateToProtocol = onNavigateToProtocol,
+              theme = theme,
+              language = language
+            )
+          } else {
+            PregnancyWeekProgressStageCard(
+              gestationalWeeks = gestationalWeeks,
+              gestationalDaysRemainder = gestationalDaysRemainder,
+              remainingCountdownDays = remainingCountdownDays,
+              dueDateText = dueDateText,
+              progressPercent = progressPercent,
+              isBetaHcgConfirmed = profile.isBetaHcgConfirmed,
+              onNavigateToPregnancy = onNavigateToPregnancy,
+              theme = theme,
+              language = language
+            )
+          }
+        }
       }
 
-      // 1A-2. FERTILITY PROTOCOL & EMBRYO TRANSFER (TEC) VISUAL STAGE PROGRESS BAR
+      // 1B. PROMINENT ESTRACE 2 MG PO (AM & PM) CLINICAL DIRECTIVE CARD WITH DAILY CHECKBOXES & REFILL
       item {
-        ProtocolCycleProgressCard(
-          protocolSteps = protocolSteps,
-          onNavigateToProtocol = onNavigateToProtocol,
-          theme = theme,
-          language = language
-        )
-      }
+        val estraceReminder = remember(medReminders) {
+          medReminders.firstOrNull {
+            it.medication.contains("estrace", ignoreCase = true) ||
+              it.title.contains("estrace", ignoreCase = true)
+          }
+        }
+        val amChecked = estraceReminder != null && estraceReminder.lastDoseDateStr == todayKey && estraceReminder.dailyAmTaken
+        val pmChecked = estraceReminder != null && estraceReminder.lastDoseDateStr == todayKey && estraceReminder.dailyPmTaken
+        val pillsLeft = estraceReminder?.pillsRemaining ?: 60L
 
-      // 1B. PROMINENT ESTRACE 2 MG PO (AM & PM) CLINICAL DIRECTIVE CARD
-      item {
         Surface(
           modifier = Modifier.fillMaxWidth(),
           shape = RoundedCornerShape(18.dp),
@@ -591,7 +808,9 @@ fun DashboardScreen(
                   style = MaterialTheme.typography.labelSmall,
                   fontSize = 10.sp,
                   color = Color(0xFF2563EB),
-                  fontWeight = FontWeight.Bold
+                  fontWeight = FontWeight.Bold,
+                  maxLines = 1,
+                  softWrap = false
                 )
               }
             }
@@ -628,7 +847,68 @@ fun DashboardScreen(
                   color = theme.mutedText,
                   lineHeight = 17.sp
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Daily AM & PM Checkboxes + Pill Supply Counter + Refill
+                if (estraceReminder != null) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    FilterChip(
+                      selected = amChecked,
+                      onClick = { onToggleMedDose(estraceReminder, "AM", todayKey) },
+                      leadingIcon = if (amChecked) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                      } else null,
+                      label = {
+                        Text(
+                          text = if (language == AppLanguage.FR) "Matin (AM)" else "Morning (AM)",
+                          maxLines = 1,
+                          softWrap = false,
+                          style = MaterialTheme.typography.labelSmall
+                        )
+                      }
+                    )
+                    FilterChip(
+                      selected = pmChecked,
+                      onClick = { onToggleMedDose(estraceReminder, "PM", todayKey) },
+                      leadingIcon = if (pmChecked) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                      } else null,
+                      label = {
+                        Text(
+                          text = if (language == AppLanguage.FR) "Soir (PM)" else "Evening (PM)",
+                          maxLines = 1,
+                          softWrap = false,
+                          style = MaterialTheme.typography.labelSmall
+                        )
+                      }
+                    )
+                    Spacer(Modifier.weight(1f))
+                    AssistChip(
+                      onClick = {
+                        onRefillMedPills(estraceReminder.id, pillsLeft + 30L)
+                        Toast.makeText(
+                          context,
+                          if (language == AppLanguage.FR) "+30 comprimés ajoutés au stock" else "+30 pills refilled",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      },
+                      label = {
+                        Text(
+                          text = "$pillsLeft ${if (language == AppLanguage.FR) "rest. +30" else "left +30"}",
+                          maxLines = 1,
+                          softWrap = false,
+                          style = MaterialTheme.typography.labelSmall
+                        )
+                      }
+                    )
+                  }
+                  Spacer(modifier = Modifier.height(6.dp))
+                }
+
                 Surface(
                   shape = RoundedCornerShape(8.dp),
                   color = theme.accent.copy(alpha = 0.12f),
@@ -678,7 +958,7 @@ fun DashboardScreen(
               ) {
                 Icon(Icons.Default.Alarm, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(if (language == AppLanguage.FR) "Alarme 08h & 20h" else "Alarm 8AM & 8PM", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(if (language == AppLanguage.FR) "Alarme 08h & 20h" else "Alarm 8AM & 8PM", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
               }
 
               OutlinedButton(
@@ -703,7 +983,10 @@ fun DashboardScreen(
       item {
         MedicationRemindersCard(
           reminders = medReminders,
+          todayKey = todayKey,
           takenRefreshTick = takenRefreshTick,
+          onToggleMedDose = onToggleMedDose,
+          onRefillMedPills = onRefillMedPills,
           onMarkTakenNow = { reminder ->
             AlarmScheduler.markMedicationTakenNow(context, reminder.id)
             takenRefreshTick++
@@ -748,6 +1031,248 @@ fun DashboardScreen(
           theme = theme,
           language = language
         )
+      }
+
+      // 1D. COMPACT PARTNER TO-DO CHECKLIST WIDGET
+      item {
+        PartnerTodoChecklistCard(
+          items = checklists.filter { it.listKey == "partner_todo" },
+          activePartner = activePartner,
+          onToggleItem = onToggleChecklistItem,
+          onAddItem = { label ->
+            onSaveChecklistItem(
+              SyncedChecklistItem(
+                id = "pt_${System.currentTimeMillis()}",
+                listKey = "partner_todo",
+                label = label,
+                isChecked = false,
+                sortOrder = checklists.size.toLong(),
+                addedBy = activePartner
+              )
+            )
+          },
+          onDeleteItem = onDeleteChecklistItem,
+          theme = theme,
+          language = language
+        )
+      }
+
+      // 1E. PROMINENT MEDICAL PHONE BOOK & EMERGENCY SPEED DIAL CARD (Requirement 2 & 3)
+      item {
+        val emergencyOrTopContacts = remember(careProviders) {
+          val emergencies = careProviders.filter { it.isEmergency }
+          if (emergencies.isNotEmpty()) emergencies.take(4)
+          else careProviders.take(4)
+        }
+
+        Surface(
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("dashboard_phonebook_card"),
+          shape = RoundedCornerShape(20.dp),
+          color = theme.cardSurface,
+          border = BorderStroke(1.dp, theme.border)
+        ) {
+          Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            // Header Row
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                Surface(
+                  shape = CircleShape,
+                  color = theme.accent.copy(alpha = 0.14f),
+                  modifier = Modifier.size(36.dp)
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                      imageVector = Icons.Default.Phone,
+                      contentDescription = null,
+                      tint = theme.accent,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+                Column {
+                  Text(
+                    text = if (language == AppLanguage.FR) "Répertoire Médical & Urgences" else "Medical Team & Emergency Contacts",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.primaryText
+                  )
+                  Text(
+                    text = if (language == AppLanguage.FR) "Appels rapides 24/7 • Scan de cartes OCR" else "24/7 direct dial • OCR Card scanner",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = theme.mutedText
+                  )
+                }
+              }
+
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = theme.accent.copy(alpha = 0.1f),
+                border = BorderStroke(0.5.dp, theme.accent.copy(alpha = 0.4f))
+              ) {
+                Text(
+                  text = "${careProviders.size} ${if (language == AppLanguage.FR) "contacts" else "saved"}",
+                  style = MaterialTheme.typography.labelSmall,
+                  fontWeight = FontWeight.Bold,
+                  color = theme.accent,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+              }
+            }
+
+            // Quick Speed Dial Chips for Emergency / Key Contacts
+            if (emergencyOrTopContacts.isNotEmpty()) {
+              Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                emergencyOrTopContacts.forEach { provider ->
+                  Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.background,
+                    border = BorderStroke(0.5.dp, theme.border),
+                    modifier = Modifier.fillMaxWidth()
+                  ) {
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                      Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                      ) {
+                        Text(
+                          text = when (provider.category.uppercase()) {
+                            "MEDICAL" -> "🩺"
+                            "CLINIC" -> "🏥"
+                            "PHARMACY" -> "💊"
+                            "FAMILY" -> "👨‍👩‍👦"
+                            else -> "👤"
+                          },
+                          fontSize = 18.sp
+                        )
+                        Column {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                              text = provider.name,
+                              style = MaterialTheme.typography.bodySmall,
+                              fontWeight = FontWeight.Bold,
+                              color = theme.primaryText,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis
+                            )
+                            if (provider.isEmergency) {
+                              Spacer(modifier = Modifier.width(4.dp))
+                              Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFFEE2E2)
+                              ) {
+                                Text(
+                                  text = "URG",
+                                  style = MaterialTheme.typography.labelSmall,
+                                  fontSize = 9.sp,
+                                  fontWeight = FontWeight.Bold,
+                                  color = Color(0xFFDC2626),
+                                  modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                              }
+                            }
+                          }
+                          Text(
+                            text = "${provider.providerType}${if (provider.affiliation.isNotBlank()) " • ${provider.affiliation}" else ""}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = theme.mutedText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                          )
+                        }
+                      }
+
+                      // Direct 1-Click Dial Button
+                      Button(
+                        onClick = {
+                          try {
+                            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${provider.phone}"))
+                            context.startActivity(intent)
+                          } catch (_: Exception) {
+                            Toast.makeText(context, "Numéroteur indisponible", Toast.LENGTH_SHORT).show()
+                          }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.accent),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier
+                          .height(32.dp)
+                          .testTag("dashboard_call_${provider.id}")
+                      ) {
+                        Icon(Icons.Default.Phone, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(if (language == AppLanguage.FR) "Appeler" else "Call", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            // Action Row: + Nouveau Contact (with OCR scanner) & Consulter tout le répertoire
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Button(
+                onClick = { showAddContactDialog = true },
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = theme.accent),
+                modifier = Modifier
+                  .weight(1f)
+                  .heightIn(min = 40.dp)
+                  .testTag("dashboard_card_add_contact_button")
+              ) {
+                Icon(Icons.Default.PersonAdd, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                  text = if (language == AppLanguage.FR) "+ Contact / Scan" else "+ Contact / Scan",
+                  color = Color.White,
+                  style = MaterialTheme.typography.labelSmall,
+                  fontWeight = FontWeight.Bold
+                )
+              }
+
+              OutlinedButton(
+                onClick = onNavigateToPhoneBook,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, theme.accent.copy(alpha = 0.5f)),
+                modifier = Modifier
+                  .weight(1f)
+                  .heightIn(min = 40.dp)
+                  .testTag("dashboard_card_open_phonebook_button")
+              ) {
+                Text(
+                  text = if (language == AppLanguage.FR) "Tout voir →" else "View All →",
+                  color = theme.accent,
+                  style = MaterialTheme.typography.labelSmall,
+                  fontWeight = FontWeight.Bold
+                )
+              }
+            }
+          }
+        }
       }
 
       // 2. CENTRAL MILESTONE TRACKER: Développement du Bébé & Progression & Countdown (Editable)
@@ -1110,12 +1635,13 @@ fun DashboardScreen(
                 onSaveNote(
                   SyncedNoteItem(
                     id = "daily_${System.currentTimeMillis()}",
-                    title = "Note Quotidienne ($dailyMood)",
+                    title = if (language == AppLanguage.FR) "Note Quotidienne ($dailyMood)" else "Daily Note ($dailyMood)",
                     content = fullContent,
                     category = "daily",
                     timestampText = formatNowFr(),
                     mood = dailyMood,
-                    symptoms = selectedSymptoms.toList()
+                    symptoms = selectedSymptoms.toList(),
+                    addedBy = activePartner
                   )
                 )
                 dailyNoteText = ""
@@ -1322,7 +1848,7 @@ fun DashboardScreen(
 
                   Spacer(modifier = Modifier.height(12.dp))
 
-                  // Action Buttons (Start / Stop)
+                  // Action Buttons (Start / Stop with real microphone capture)
                   Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.Center
@@ -1330,40 +1856,82 @@ fun DashboardScreen(
                     if (!isRecordingVoice) {
                       Button(
                         onClick = {
-                          isRecordingVoice = true
-                          Toast.makeText(context, "🎤 Enregistrement démarré (max 30s) !", Toast.LENGTH_SHORT).show()
+                          if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            val id = "vm_${System.currentTimeMillis()}"
+                            if (audioController.startRecording(id)) {
+                              activeRecordingMemoId = id
+                              isRecordingVoice = true
+                              Toast.makeText(
+                                context,
+                                if (language == AppLanguage.FR) "🎤 Enregistrement audio démarré (max 30s)" else "🎤 Recording started (max 30s)",
+                                Toast.LENGTH_SHORT
+                              ).show()
+                            } else {
+                              Toast.makeText(
+                                context,
+                                if (language == AppLanguage.FR) "Impossible d'ouvrir le microphone" else "Could not open microphone",
+                                Toast.LENGTH_SHORT
+                              ).show()
+                            }
+                          } else {
+                            recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                          }
                         },
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = theme.accent),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                        modifier = Modifier.heightIn(min = 48.dp)
                       ) {
                         Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Démarrer Mémo (30s)", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                          if (language == AppLanguage.FR) "Démarrer Mémo (30s)" else "Record Memo (30s)",
+                          color = Color.White,
+                          style = MaterialTheme.typography.bodySmall,
+                          fontWeight = FontWeight.SemiBold,
+                          maxLines = 1,
+                          softWrap = false
+                        )
                       }
                     } else {
                       Button(
                         onClick = {
                           isRecordingVoice = false
-                          val duration = recordingSeconds.coerceAtLeast(1)
+                          val (duration, b64) = audioController.stopRecording()
+                          val id = activeRecordingMemoId.ifBlank { "vm_${System.currentTimeMillis()}" }
                           onSaveVoiceMemo(
                             SyncedVoiceMemo(
-                              id = "vm_${System.currentTimeMillis()}",
-                              title = "Mémo Consultation (${duration}s)",
-                              durationSec = duration.toLong(),
-                              timestampText = formatNowFr()
+                              id = id,
+                              title = if (language == AppLanguage.FR) "Mémo Consultation (${duration}s)" else "Consultation Memo (${duration}s)",
+                              durationSec = duration,
+                              timestampText = formatNowFr(),
+                              audioBase64 = b64,
+                              addedBy = activePartner
                             )
                           )
-                          Toast.makeText(context, "✅ Mémo sauvegardé & synchronisé !", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(
+                            context,
+                            if (language == AppLanguage.FR) "✅ Mémo audio sauvegardé & synchronisé !" else "✅ Audio memo saved & synced!",
+                            Toast.LENGTH_SHORT
+                          ).show()
                         },
-                        modifier = Modifier.testTag("dashboard_stop_voice_memo_button"),
+                        modifier = Modifier
+                          .heightIn(min = 48.dp)
+                          .testTag("dashboard_stop_voice_memo_button"),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
                         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
                       ) {
                         Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Arrêter & Sauvegarder", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                          if (language == AppLanguage.FR) "Arrêter & Sauvegarder" else "Stop & Save",
+                          color = Color.White,
+                          style = MaterialTheme.typography.bodySmall,
+                          fontWeight = FontWeight.SemiBold,
+                          maxLines = 1,
+                          softWrap = false
+                        )
                       }
                     }
                   }
@@ -1373,7 +1941,12 @@ fun DashboardScreen(
               Spacer(modifier = Modifier.height(10.dp))
 
               // List of saved voice memos
-              Text("Mémos Enregistrés (${voiceMemos.size}) :", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = theme.primaryText)
+              Text(
+                if (language == AppLanguage.FR) "Mémos Enregistrés (${voiceMemos.size}) :" else "Recorded Memos (${voiceMemos.size}):",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = theme.primaryText
+              )
               Spacer(modifier = Modifier.height(6.dp))
 
               Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1398,22 +1971,36 @@ fun DashboardScreen(
                           shape = CircleShape,
                           color = theme.accent.copy(alpha = 0.15f),
                           modifier = Modifier
-                            .size(32.dp)
+                            .size(40.dp)
                             .clickable {
-                              playingMemoId = if (isPlaying) null else memo.id
-                              Toast.makeText(
-                                context,
-                                if (!isPlaying) "Lecture : ${memo.title}" else "Pause",
-                                Toast.LENGTH_SHORT
-                              ).show()
+                              if (isPlaying) {
+                                audioController.stopPlayback()
+                                playingMemoId = null
+                              } else {
+                                val started = audioController.playMemo(
+                                  memo = memo,
+                                  onCompletion = { playingMemoId = null },
+                                  onError = {
+                                    playingMemoId = null
+                                    Toast.makeText(
+                                      context,
+                                      if (language == AppLanguage.FR) "Aucun audio enregistré pour ce mémo" else "No audio stream stored for this memo",
+                                      Toast.LENGTH_SHORT
+                                    ).show()
+                                  }
+                                )
+                                if (started) {
+                                  playingMemoId = memo.id
+                                }
+                              }
                             }
                         ) {
                           Box(contentAlignment = Alignment.Center) {
                             Icon(
                               if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                              contentDescription = "Lire",
+                              contentDescription = if (language == AppLanguage.FR) "Lire" else "Play",
                               tint = theme.accent,
-                              modifier = Modifier.size(18.dp)
+                              modifier = Modifier.size(20.dp)
                             )
                           }
                         }
@@ -1421,7 +2008,7 @@ fun DashboardScreen(
                         Column {
                           Text(text = memo.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = theme.primaryText)
                           Text(
-                            text = "${memo.timestampText} • Durée : 00:${if (memo.durationSec < 10) "0${memo.durationSec}" else "${memo.durationSec}"}",
+                            text = "${memo.timestampText} • 00:${if (memo.durationSec < 10) "0${memo.durationSec}" else "${memo.durationSec}"} • ${memo.addedBy}",
                             style = MaterialTheme.typography.labelSmall,
                             color = theme.mutedText
                           )
@@ -1429,29 +2016,31 @@ fun DashboardScreen(
                       }
 
                       Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Native share button
                         IconButton(
                           onClick = {
                             shareContent(
                               context = context,
                               title = memo.title,
-                              text = "🎙️ Mémo Vocal : ${memo.title}\nDate : ${memo.timestampText}\nDurée : ${memo.durationSec}s\nApplication Grossesse & PMA RMA 2026"
+                              text = "🎙️ Mémo Vocal : ${memo.title}\nDate : ${memo.timestampText}\nDurée : ${memo.durationSec}s"
                             )
                           },
-                          modifier = Modifier.size(30.dp)
+                          modifier = Modifier.size(36.dp)
                         ) {
-                          Icon(Icons.Default.Share, contentDescription = "Partager", tint = theme.accent, modifier = Modifier.size(16.dp))
+                          Icon(Icons.Default.Share, contentDescription = if (language == AppLanguage.FR) "Partager" else "Share", tint = theme.accent, modifier = Modifier.size(16.dp))
                         }
 
-                        // Delete button
                         IconButton(
                           onClick = {
+                            if (isPlaying) {
+                              audioController.stopPlayback()
+                              playingMemoId = null
+                            }
                             onDeleteVoiceMemo(memo.id)
-                            Toast.makeText(context, "Mémo supprimé", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, if (language == AppLanguage.FR) "Mémo supprimé" else "Memo deleted", Toast.LENGTH_SHORT).show()
                           },
-                          modifier = Modifier.size(30.dp)
+                          modifier = Modifier.size(36.dp)
                         ) {
-                          Icon(Icons.Default.Delete, contentDescription = "Supprimer", tint = theme.mutedText, modifier = Modifier.size(16.dp))
+                          Icon(Icons.Default.Delete, contentDescription = if (language == AppLanguage.FR) "Supprimer" else "Delete", tint = theme.mutedText, modifier = Modifier.size(16.dp))
                         }
                       }
                     }
@@ -1557,7 +2146,7 @@ fun DashboardScreen(
                       )
                       Spacer(modifier = Modifier.height(6.dp))
                       Text(
-                        text = note.timestampText,
+                        text = "${note.timestampText} • ${if (language == AppLanguage.FR) "Par" else "By"} ${note.addedBy}",
                         style = MaterialTheme.typography.labelSmall,
                         color = theme.mutedText,
                         fontSize = 11.sp
@@ -1714,6 +2303,42 @@ fun DashboardScreen(
               Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
                   onClick = {
+                    val toggled = !task.hasAlarm
+                    onTaskAdded(task.copy(hasAlarm = toggled))
+                    val ts = DateSortUtils.taskEpochMillis(task)
+                    if (toggled && ts != Long.MAX_VALUE) {
+                      AlarmScheduler.scheduleAppointmentAlarm(
+                        context = context,
+                        itemId = "task_${task.id}",
+                        title = task.title,
+                        details = "${task.date} • ${task.details}".trim(),
+                        eventEpochMillis = ts,
+                        offsetMinutes = task.alarmTimeMinutesBefore.toLong()
+                      )
+                    } else {
+                      AlarmScheduler.cancelAppointmentAlarm(context, "task_${task.id}")
+                    }
+                    Toast.makeText(
+                      context,
+                      if (toggled) {
+                        if (language == AppLanguage.FR) "🔔 Rappel activé" else "🔔 Alarm enabled"
+                      } else {
+                        if (language == AppLanguage.FR) "🔕 Rappel désactivé" else "🔕 Alarm disabled"
+                      },
+                      Toast.LENGTH_SHORT
+                    ).show()
+                  },
+                  modifier = Modifier.size(40.dp)
+                ) {
+                  Icon(
+                    imageVector = if (task.hasAlarm) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                    contentDescription = if (language == AppLanguage.FR) "Alarme" else "Alarm",
+                    tint = if (task.hasAlarm) theme.accent else theme.mutedText,
+                    modifier = Modifier.size(17.dp)
+                  )
+                }
+                IconButton(
+                  onClick = {
                     editingTaskId = task.id
                     newTitle = task.title
                     newDate = task.date
@@ -1741,7 +2366,7 @@ fun DashboardScreen(
         }
       }
 
-      // 6. Archived Past Items
+      // 6. Collapsible "Passé" / "Past" Section
       if (pastTasks.isNotEmpty()) {
         item {
           Surface(
@@ -1758,9 +2383,9 @@ fun DashboardScreen(
             ) {
               Text(
                 text = if (language == AppLanguage.FR)
-                  "Historique archivé (${pastTasks.size} étapes terminées)"
+                  "Passé (${pastTasks.size} éléments terminés ou passés)"
                 else
-                  "Archived history (${pastTasks.size} completed items)",
+                  "Past (${pastTasks.size} completed or past items)",
                 style = MaterialTheme.typography.bodySmall,
                 color = theme.mutedText
               )
@@ -1774,22 +2399,27 @@ fun DashboardScreen(
         }
 
         if (showArchivedPastItems) {
-          items(pastTasks) { pastTask ->
+          items(pastTasks, key = { "past_${it.id}" }) { pastTask ->
             Surface(
               modifier = Modifier.fillMaxWidth(),
               shape = RoundedCornerShape(12.dp),
-              color = theme.cardSurface.copy(alpha = 0.6f),
+              color = theme.cardSurface.copy(alpha = 0.65f),
               border = BorderStroke(0.5.dp, theme.border)
             ) {
               Row(
                 modifier = Modifier.padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
               ) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(16.dp))
+                Icon(
+                  if (pastTask.isCompleted) Icons.Default.CheckCircle else Icons.Default.History,
+                  contentDescription = null,
+                  tint = if (pastTask.isCompleted) Color(0xFF16A34A) else theme.mutedText,
+                  modifier = Modifier.size(16.dp)
+                )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                   Text(text = pastTask.title, style = MaterialTheme.typography.bodySmall, color = theme.mutedText)
-                  Text(text = pastTask.date, style = MaterialTheme.typography.labelSmall, fontSize = 10.sp, color = theme.mutedText)
+                  Text(text = "${pastTask.date} • ${pastTask.addedBy}", style = MaterialTheme.typography.labelSmall, fontSize = 10.sp, color = theme.mutedText)
                 }
               }
             }
@@ -1799,63 +2429,75 @@ fun DashboardScreen(
     }
     }
 
-    // Floating Action Button positioned cleanly right above the slimmer anchored bottom Digital Wallet stack
-    if (!isWalletExpanded) {
-      FloatingActionButton(
-        onClick = {
-          editingTaskId = null
-          newTitle = ""
-          if (newDate.isBlank()) newDate = "13 Novembre 2026 à 14:00"
-          newCategory = ""
-          newDetails = ""
-          showAddDialog = true
-        },
-        modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .padding(end = 16.dp, bottom = if (walletCards.isEmpty()) 195.dp else 172.dp)
-          .testTag("dashboard_quick_add_fab"),
-        containerColor = theme.accent,
-        contentColor = Color.White,
-        shape = RoundedCornerShape(16.dp)
+    // Floating Action Buttons: Add Contact (Requirement 2) & Quick Add Event
+    AnimatedVisibility(
+      visible = !listState.isScrollInProgress && !isWalletExpanded,
+      enter = fadeIn() + slideInVertically { it },
+      exit = fadeOut() + slideOutVertically { it },
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(end = 16.dp, bottom = 16.dp)
+    ) {
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp),
-          verticalAlignment = Alignment.CenterVertically
+        // Quick Add Contact FAB (Requirement 2)
+        FloatingActionButton(
+          onClick = { showAddContactDialog = true },
+          modifier = Modifier
+            .border(1.5.dp, theme.accent, RoundedCornerShape(16.dp))
+            .testTag("dashboard_add_contact_fab"),
+          containerColor = theme.cardSurface,
+          contentColor = theme.accent,
+          shape = RoundedCornerShape(16.dp)
         ) {
-          Icon(Icons.Default.AddAlarm, contentDescription = Strings.t("quick_add", language))
-          Spacer(modifier = Modifier.width(6.dp))
-          Text(text = Strings.t("quick_add", language), fontWeight = FontWeight.SemiBold)
+          Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(
+              Icons.Default.PersonAdd,
+              contentDescription = if (language == AppLanguage.FR) "Ajouter Contact" else "Add Contact",
+              tint = theme.accent
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = if (language == AppLanguage.FR) "+ Contact" else "+ Contact",
+              fontWeight = FontWeight.Bold,
+              color = theme.accent
+            )
+          }
+        }
+
+        // Quick Add Event FAB
+        FloatingActionButton(
+          onClick = {
+            editingTaskId = null
+            newTitle = ""
+            if (newDate.isBlank()) newDate = "13 Novembre 2026 à 14:00"
+            newCategory = ""
+            newDetails = ""
+            showAddDialog = true
+          },
+          modifier = Modifier.testTag("dashboard_quick_add_fab"),
+          containerColor = theme.accent,
+          contentColor = Color.White,
+          shape = RoundedCornerShape(16.dp)
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(Icons.Default.AddAlarm, contentDescription = Strings.t("quick_add", language))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = Strings.t("quick_add", language), fontWeight = FontWeight.SemiBold)
+          }
         }
       }
     }
 
-    // Backdrop scrim when the anchored Digital Wallet stack is expanded
-    if (isWalletExpanded) {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(Color.Black.copy(alpha = 0.38f))
-          .clickable { isWalletExpanded = false }
-      )
-    }
 
-    // Interactive Digital Wallet Card Stack permanently anchored at the bottom of the main screen
-    DigitalWalletStackSection(
-      userId = userId,
-      cards = walletCards,
-      syncStatus = walletSyncStatus,
-      onSaveCard = onSaveWalletCard,
-      onDeleteCard = onDeleteWalletCard,
-      onSeedSampleCards = onSeedSampleWalletCards,
-      theme = theme,
-      language = language,
-      isAnchoredBottomDock = true,
-      isExpanded = isWalletExpanded,
-      onToggleExpanded = { isWalletExpanded = !isWalletExpanded },
-      modifier = Modifier
-        .align(Alignment.BottomCenter)
-        .padding(horizontal = 6.dp)
-    )
   }
 
   // Automatic Suggestion Popup
@@ -2121,7 +2763,8 @@ fun DashboardScreen(
                   category = editingNoteCategory,
                   timestampText = if (currentNoteId == null) formatNowFr() else "${formatNowFr()} • Modifié",
                   mood = editingNoteMood,
-                  symptoms = editingNoteSymptoms
+                  symptoms = editingNoteSymptoms,
+                  addedBy = activePartner
                 )
               )
               Toast.makeText(
@@ -2290,10 +2933,22 @@ fun DashboardScreen(
                 category = if (newCategory.isBlank()) "💊 Médicaments" else newCategory.trim(),
                 details = newDetails.trim(),
                 isCompleted = existingTask?.isCompleted ?: false,
-                hasAlarm = existingTask?.hasAlarm ?: true,
-                alarmTimeMinutesBefore = existingTask?.alarmTimeMinutesBefore ?: 15
+                hasAlarm = existingTask?.hasAlarm ?: enableAlarm,
+                alarmTimeMinutesBefore = existingTask?.alarmTimeMinutesBefore ?: alarmOffsetMinutes,
+                addedBy = existingTask?.addedBy ?: activePartner
               )
               onTaskAdded(newTask)
+              val targetTs = DateSortUtils.taskEpochMillis(newTask)
+              if (newTask.hasAlarm && targetTs != Long.MAX_VALUE) {
+                AlarmScheduler.scheduleAppointmentAlarm(
+                  context = context,
+                  itemId = "task_${newTask.id}",
+                  title = newTask.title,
+                  details = "${newTask.date} • ${newTask.details}".trim(),
+                  eventEpochMillis = targetTs,
+                  offsetMinutes = newTask.alarmTimeMinutesBefore.toLong()
+                )
+              }
               newTitle = ""
               newDate = ""
               newCategory = ""
@@ -2348,6 +3003,25 @@ fun DashboardScreen(
       onDismiss = {
         showMedReminderDialog = false
         editingMedReminder = null
+      }
+    )
+  }
+
+  if (showAddContactDialog) {
+    EditCareProviderDialog(
+      provider = null,
+      existingProviders = careProviders,
+      theme = theme,
+      isFr = language == AppLanguage.FR,
+      onDismiss = { showAddContactDialog = false },
+      onSave = { newProvider ->
+        onSaveCareProvider(newProvider)
+        showAddContactDialog = false
+        Toast.makeText(
+          context,
+          if (language == AppLanguage.FR) "Contact '${newProvider.name}' enregistré & synchronisé !" else "Contact '${newProvider.name}' saved & synced!",
+          Toast.LENGTH_SHORT
+        ).show()
       }
     )
   }
@@ -2583,9 +3257,260 @@ private fun ProtocolCycleProgressCard(
 }
 
 @Composable
+private fun PregnancyWeekProgressStageCard(
+  gestationalWeeks: Int,
+  gestationalDaysRemainder: Int,
+  remainingCountdownDays: Int,
+  dueDateText: String,
+  progressPercent: Float,
+  isBetaHcgConfirmed: Boolean,
+  onNavigateToPregnancy: () -> Unit,
+  theme: ThemeColors,
+  language: AppLanguage
+) {
+  val isFr = language == AppLanguage.FR
+  Surface(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("dashboard_pregnancy_progress_card"),
+    shape = RoundedCornerShape(20.dp),
+    color = theme.cardSurface,
+    border = BorderStroke(1.dp, theme.border)
+  ) {
+    Column(
+      modifier = Modifier.padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = if (isFr) "Suivi Grossesse • Semaines & Trimestres" else "Pregnancy Tracker • Weeks & Trimesters",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = theme.primaryText
+          )
+          Text(
+            text = if (isFr) {
+              "Semaine $gestationalWeeks + ${gestationalDaysRemainder}j • $remainingCountdownDays j restants ($dueDateText)"
+            } else {
+              "Week $gestationalWeeks + ${gestationalDaysRemainder}d • $remainingCountdownDays d left ($dueDateText)"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = theme.mutedText
+          )
+        }
+        Surface(
+          shape = RoundedCornerShape(100.dp),
+          color = if (isBetaHcgConfirmed) Color(0xFFDCFCE7) else theme.accent.copy(alpha = 0.14f)
+        ) {
+          Text(
+            text = "${(progressPercent * 100).toInt()}%",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.ExtraBold,
+            color = if (isBetaHcgConfirmed) Color(0xFF15803D) else theme.accent
+          )
+        }
+      }
+
+      LinearProgressIndicator(
+        progress = { progressPercent.coerceIn(0f, 1f) },
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(8.dp)
+          .clip(RoundedCornerShape(4.dp)),
+        color = if (isBetaHcgConfirmed) Color(0xFF16A34A) else theme.accent,
+        trackColor = theme.border
+      )
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        listOf("T1 (1-13s)" to (gestationalWeeks < 14), "T2 (14-27s)" to (gestationalWeeks in 14..27), "T3 (28-40s)" to (gestationalWeeks >= 28)).forEach { (label, active) ->
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (active) theme.accent.copy(alpha = 0.14f) else theme.background,
+            border = BorderStroke(1.dp, if (active) theme.accent else theme.border)
+          ) {
+            Text(
+              text = label,
+              style = MaterialTheme.typography.labelSmall,
+              fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+              color = if (active) theme.accent else theme.mutedText,
+              maxLines = 1,
+              softWrap = false,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+          }
+        }
+        TextButton(onClick = onNavigateToPregnancy) {
+          Text(if (isFr) "Détails" else "Details", color = theme.accent, fontWeight = FontWeight.Bold)
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PartnerTodoChecklistCard(
+  items: List<SyncedChecklistItem>,
+  activePartner: String,
+  onToggleItem: (String, Boolean) -> Unit,
+  onAddItem: (String) -> Unit,
+  onDeleteItem: (String) -> Unit,
+  theme: ThemeColors,
+  language: AppLanguage
+) {
+  val isFr = language == AppLanguage.FR
+  var newTodoText by remember { mutableStateOf("") }
+  val completed = items.count { it.isChecked }
+
+  Surface(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("partner_todo_widget"),
+    shape = RoundedCornerShape(20.dp),
+    color = theme.cardSurface,
+    border = BorderStroke(1.dp, theme.border)
+  ) {
+    Column(
+      modifier = Modifier.padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Surface(
+            shape = CircleShape,
+            color = theme.accent.copy(alpha = 0.14f),
+            modifier = Modifier.size(34.dp)
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(Icons.Default.Group, contentDescription = null, tint = theme.accent, modifier = Modifier.size(18.dp))
+            }
+          }
+          Spacer(modifier = Modifier.width(10.dp))
+          Column {
+            Text(
+              text = Strings.t("partner_todo_title", language),
+              style = MaterialTheme.typography.titleSmall,
+              fontWeight = FontWeight.Bold,
+              color = theme.primaryText
+            )
+            Text(
+              text = if (isFr) "$completed/${items.size} complétés • Mode : $activePartner" else "$completed/${items.size} done • Mode: $activePartner",
+              style = MaterialTheme.typography.labelSmall,
+              color = theme.mutedText
+            )
+          }
+        }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        OutlinedTextField(
+          value = newTodoText,
+          onValueChange = { newTodoText = it },
+          placeholder = {
+            Text(
+              if (isFr) "Ajouter une tâche partagée..." else "Add shared couple task...",
+              style = MaterialTheme.typography.bodySmall
+            )
+          },
+          singleLine = true,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.weight(1f)
+        )
+        FilledIconButton(
+          onClick = {
+            val clean = newTodoText.trim()
+            if (clean.isNotEmpty()) {
+              onAddItem(clean)
+              newTodoText = ""
+            }
+          },
+          colors = IconButtonDefaults.filledIconButtonColors(containerColor = theme.accent),
+          modifier = Modifier.size(48.dp)
+        ) {
+          Icon(Icons.Default.Add, contentDescription = if (isFr) "Ajouter" else "Add", tint = Color.White)
+        }
+      }
+
+      if (items.isEmpty()) {
+        Text(
+          text = if (isFr) "Aucune tâche couple. Ajoutez votre première action partagée !" else "No shared items yet. Add your first partner task!",
+          style = MaterialTheme.typography.bodySmall,
+          color = theme.mutedText
+        )
+      } else {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          items.forEach { item ->
+            Surface(
+              shape = RoundedCornerShape(12.dp),
+              color = theme.background,
+              border = BorderStroke(1.dp, theme.border),
+              modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggleItem(item.id, item.isChecked) }
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Checkbox(
+                  checked = item.isChecked,
+                  onCheckedChange = { onToggleItem(item.id, item.isChecked) }
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = item.label,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      textDecoration = if (item.isChecked) TextDecoration.LineThrough else TextDecoration.None
+                    ),
+                    color = if (item.isChecked) theme.mutedText else theme.primaryText,
+                    fontWeight = FontWeight.Medium
+                  )
+                  Text(
+                    text = if (isFr) "Ajouté par ${item.addedBy}" else "Added by ${item.addedBy}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = theme.mutedText,
+                    fontSize = 10.sp
+                  )
+                }
+                IconButton(
+                  onClick = { onDeleteItem(item.id) },
+                  modifier = Modifier.size(36.dp)
+                ) {
+                  Icon(Icons.Default.Close, contentDescription = if (isFr) "Supprimer" else "Delete", tint = theme.mutedText, modifier = Modifier.size(16.dp))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
 private fun MedicationRemindersCard(
   reminders: List<SyncedMedReminder>,
+  todayKey: String,
   takenRefreshTick: Int,
+  onToggleMedDose: (SyncedMedReminder, String, String) -> Unit,
+  onRefillMedPills: (String, Long) -> Unit,
   onMarkTakenNow: (SyncedMedReminder) -> Unit,
   onToggleReminder: (SyncedMedReminder) -> Unit,
   onEditReminder: (SyncedMedReminder) -> Unit,
@@ -2778,6 +3703,39 @@ private fun MedicationRemindersCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = theme.mutedText,
                     fontSize = 11.sp
+                  )
+                }
+
+                // Daily AM/PM dose adherence checkboxes + pill supply refill
+                val isToday = reminder.lastDoseDateStr == todayKey
+                val amDone = isToday && reminder.dailyAmTaken
+                val pmDone = isToday && reminder.dailyPmTaken
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  FilterChip(
+                    selected = amDone,
+                    onClick = { onToggleMedDose(reminder, "AM", todayKey) },
+                    label = { Text("AM", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) }
+                  )
+                  FilterChip(
+                    selected = pmDone,
+                    onClick = { onToggleMedDose(reminder, "PM", todayKey) },
+                    label = { Text("PM", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) }
+                  )
+                  Spacer(Modifier.weight(1f))
+                  AssistChip(
+                    onClick = { onRefillMedPills(reminder.id, reminder.pillsRemaining + 30L) },
+                    label = {
+                      Text(
+                        text = "${reminder.pillsRemaining} ${if (isFr) "comp. +30" else "left +30"}",
+                        maxLines = 1,
+                        softWrap = false,
+                        style = MaterialTheme.typography.labelSmall
+                      )
+                    }
                   )
                 }
 

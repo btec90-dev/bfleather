@@ -27,9 +27,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.AiAssistantService
+import com.example.data.PmaRepository
 import com.example.data.SyncedCareProvider
 import com.example.i18n.AppLanguage
 import com.example.ui.theme.ThemeColors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 // -------------------------------------------------------------
 // Chat & Care Provider Models
@@ -63,6 +67,19 @@ fun AIMamaScreen(
   language: AppLanguage
 ) {
   val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
+
+  val resolvedDoctorName = remember(careProviders) {
+    careProviders.firstOrNull {
+      it.providerType.contains("OB", ignoreCase = true) ||
+        it.providerType.contains("Fert", ignoreCase = true) ||
+        it.name.isNotBlank()
+    }?.name?.takeIf { it.isNotBlank() && !it.startsWith("[") } ?: PmaRepository.doctorName
+  }
+  val resolvedHospitalName = remember(careProviders) {
+    careProviders.firstOrNull { it.affiliation.isNotBlank() && !it.affiliation.startsWith("[") }
+      ?.affiliation ?: PmaRepository.clinicName
+  }
 
   var userInput by remember { mutableStateOf("") }
   var showInlineAddDoctorCard by remember { mutableStateOf(false) }
@@ -70,16 +87,16 @@ fun AIMamaScreen(
   var showProvidersListDialog by remember { mutableStateOf(false) }
 
   // Initial AI Mom Greeting grounded in clinical guidelines
-  val messages = remember {
+  val messages = remember(resolvedDoctorName, resolvedHospitalName, language) {
     mutableStateListOf(
       ChatMessage(
         id = "m1",
         sender = "mama_ai",
         text = if (language == AppLanguage.FR)
-          "Bonjour ! Je suis IA Maman, votre accompagnante en santé maternelle. Je m'appuie sur les recommandations certifiées (ACOG, OMS) pour répondre à vos questions sur vos symptômes, votre nutrition et votre suivi avec [Doctor's Name] à [Preferred Gyn/OB Hospital]."
+          "Bonjour ! Je suis IA Maman, votre accompagnante en santé maternelle. Je m'appuie sur les recommandations certifiées (ACOG, OMS) pour répondre à vos questions sur vos symptômes, votre nutrition et votre suivi avec $resolvedDoctorName à $resolvedHospitalName."
         else
-          "Hello! I am AI Mom, your evidence-based maternal care companion. Grounded in certified clinical guidelines (ACOG, WHO), I guide your symptoms, nutrition, and care management with [Doctor's Name] at [Preferred Gyn/OB Hospital].",
-        timestamp = "En ligne"
+          "Hello! I am AI Mom, your evidence-based maternal care companion. Grounded in certified clinical guidelines (ACOG, WHO), I guide your symptoms, nutrition, and care management with $resolvedDoctorName at $resolvedHospitalName.",
+        timestamp = if (language == AppLanguage.FR) "En ligne" else "Online"
       )
     )
   }
@@ -168,7 +185,7 @@ fun AIMamaScreen(
                 }
               }
               Text(
-                text = "Accompagnement • [Preferred Gyn/OB Hospital]",
+                text = if (language == AppLanguage.FR) "Accompagnement • $resolvedHospitalName" else "Care • $resolvedHospitalName",
                 style = MaterialTheme.typography.labelSmall,
                 color = theme.mutedText,
                 fontSize = 11.sp
@@ -268,7 +285,10 @@ fun AIMamaScreen(
               color = Color(0xFF991B1B)
             )
             Text(
-              text = "Saignements, fortes douleurs, troubles visuels ou diminution des mouvements : appelez le 15/911 ou allez à [Preferred Gyn/OB Hospital].",
+              text = if (language == AppLanguage.FR)
+                "Saignements, fortes douleurs, troubles visuels ou diminution des mouvements : appelez le 15/911 ou allez à $resolvedHospitalName."
+              else
+                "Bleeding, severe pain, vision changes, or reduced movement: call 911/15 or go to $resolvedHospitalName.",
               style = MaterialTheme.typography.labelSmall,
               fontSize = 11.sp,
               color = Color(0xFF7F1D1D),
@@ -357,6 +377,9 @@ fun AIMamaScreen(
               query = promptText,
               messages = messages,
               language = language,
+              doctorName = resolvedDoctorName,
+              hospitalName = resolvedHospitalName,
+              scope = coroutineScope,
               onTriggerEmergency = { showTopEmergencyBanner = true },
               onOpenProviderWidget = { showInlineAddDoctorCard = true }
             )
@@ -431,7 +454,7 @@ fun AIMamaScreen(
                 modifier = Modifier.weight(1f),
                 theme = theme,
                 onClick = {
-                  sendUserMessage("Posologie Estrace & recommandations ACOG", messages, language, { showTopEmergencyBanner = true }, { showInlineAddDoctorCard = true })
+                  sendUserMessage("Posologie Estrace & recommandations ACOG", messages, language, resolvedDoctorName, resolvedHospitalName, coroutineScope, { showTopEmergencyBanner = true }, { showInlineAddDoctorCard = true })
                 }
               )
               CompactTile(
@@ -440,7 +463,7 @@ fun AIMamaScreen(
                 modifier = Modifier.weight(1f),
                 theme = theme,
                 onClick = {
-                  sendUserMessage("Aliments recommandés et à éviter au T2", messages, language, { showTopEmergencyBanner = true }, { showInlineAddDoctorCard = true })
+                  sendUserMessage("Aliments recommandés et à éviter au T2", messages, language, resolvedDoctorName, resolvedHospitalName, coroutineScope, { showTopEmergencyBanner = true }, { showInlineAddDoctorCard = true })
                 }
               )
             }
@@ -450,15 +473,15 @@ fun AIMamaScreen(
               horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
               CompactTile(
-                title = "🩺 Soignant Référent",
-                subtitle = "[Doctor's Name]",
+                title = if (language == AppLanguage.FR) "🩺 Soignant Référent" else "🩺 Referring Doctor",
+                subtitle = resolvedDoctorName,
                 modifier = Modifier.weight(1f),
                 theme = theme,
                 onClick = { showProvidersListDialog = true }
               )
               CompactTile(
-                title = "🚨 Urgence & Signes",
-                subtitle = "[Preferred Gyn/OB Hospital]",
+                title = if (language == AppLanguage.FR) "🚨 Urgence & Signes" else "🚨 Urgent Care",
+                subtitle = resolvedHospitalName,
                 modifier = Modifier.weight(1f),
                 theme = theme,
                 onClick = { showTopEmergencyBanner = true }
@@ -655,6 +678,9 @@ fun AIMamaScreen(
                 query = userInput,
                 messages = messages,
                 language = language,
+                doctorName = resolvedDoctorName,
+                hospitalName = resolvedHospitalName,
+                scope = coroutineScope,
                 onTriggerEmergency = { showTopEmergencyBanner = true },
                 onOpenProviderWidget = { showInlineAddDoctorCard = true }
               )
@@ -973,11 +999,11 @@ private fun CompactAddProviderCard(
 
       Button(
         onClick = {
-          val nameVal = if (inputName.isNotBlank()) inputName else "[Doctor's Name]"
-          val affilVal = if (inputAffiliation.isNotBlank()) inputAffiliation else "[Preferred Gyn/OB Hospital]"
-          val phoneVal = if (inputPhone.isNotBlank()) inputPhone else "[Enter Phone]"
-          val emergVal = if (inputEmergency.isNotBlank()) inputEmergency else "[Enter Number]"
-          val addrVal = if (inputAddress.isNotBlank()) inputAddress else "[Enter Address]"
+          val nameVal = inputName.trim().ifBlank { PmaRepository.doctorName }
+          val affilVal = inputAffiliation.trim().ifBlank { PmaRepository.clinicName }
+          val phoneVal = inputPhone.trim().ifBlank { "212-756-5777" }
+          val emergVal = inputEmergency.trim().ifBlank { "911" }
+          val addrVal = inputAddress.trim().ifBlank { PmaRepository.clinicAddress }
 
           onSave(
             CareProvider(
@@ -1040,22 +1066,26 @@ private fun CompactTile(
 }
 
 // -------------------------------------------------------------
-// AI MOM MESSAGE PROCESSING ENGINE
+// AI MOM MESSAGE PROCESSING ENGINE (Firebase AI Logic + Grounded Fallback)
 // -------------------------------------------------------------
 private fun sendUserMessage(
   query: String,
   messages: MutableList<ChatMessage>,
   language: AppLanguage,
+  doctorName: String,
+  hospitalName: String,
+  scope: CoroutineScope,
   onTriggerEmergency: () -> Unit,
   onOpenProviderWidget: () -> Unit
 ) {
+  val nowStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
   val userMsgId = "u_${System.currentTimeMillis()}"
   messages.add(
     ChatMessage(
       id = userMsgId,
       sender = "user",
       text = query,
-      timestamp = "15:30"
+      timestamp = nowStr
     )
   )
 
@@ -1071,16 +1101,16 @@ private fun sendUserMessage(
   if (isEmergency) {
     onTriggerEmergency()
     val emergencyReply = if (language == AppLanguage.FR)
-      "🚨 ALERTE MÉDICALE D'URGENCE :\nLes symptômes rapportés nécessitent une prise en charge médicale immédiate.\n\n• Appelez sans délai le 15, 112 ou 911.\n• Ou rendez-vous immédiatement aux urgences obstétriques de [Preferred Gyn/OB Hospital].\n• Contactez la ligne d'urgence de [Doctor's Name].\nNe conduisez pas vous-même."
+      "🚨 ALERTE MÉDICALE D'URGENCE :\nLes symptômes rapportés nécessitent une prise en charge médicale immédiate.\n\n• Appelez sans délai le 15, 112 ou 911.\n• Ou rendez-vous immédiatement aux urgences obstétriques de $hospitalName.\n• Contactez la ligne d'urgence de $doctorName.\nNe conduisez pas vous-même."
     else
-      "🚨 URGENT EMERGENCY WARNING:\nYour reported symptoms require immediate medical intervention without delay.\n\n• Call emergency services immediately (911 / 112).\n• Or proceed directly to the obstetrics emergency department at [Preferred Gyn/OB Hospital].\n• Contact the on-call line of [Doctor's Name].\nDo not drive yourself."
+      "🚨 URGENT EMERGENCY WARNING:\nYour reported symptoms require immediate medical intervention without delay.\n\n• Call emergency services immediately (911 / 112).\n• Or proceed directly to the obstetrics emergency department at $hospitalName.\n• Contact the on-call line of $doctorName.\nDo not drive yourself."
 
     messages.add(
       ChatMessage(
         id = "ai_${System.currentTimeMillis()}",
         sender = "mama_ai",
         text = emergencyReply,
-        timestamp = "15:31",
+        timestamp = nowStr,
         isEmergency = true
       )
     )
@@ -1096,95 +1126,97 @@ private fun sendUserMessage(
   if (isAddDoctorRequest) {
     onOpenProviderWidget()
     val providerReply = if (language == AppLanguage.FR)
-      "📋 **Ajout de Soignant Référent** :\n• **Type :** [OB/GYN | Pédiatre | Doula | Sage-femme | Spécialiste]\n• **Médecin / Clinique :** [Saisir Nom]\n• **Affiliation Hospitalière :** [Preferred Gyn/OB Hospital]\n• **Téléphone :** [Saisir Numéro] | **Urgence :** [Saisir Numéro]\n• **Adresse :** [Saisir Adresse]\n\nLe formulaire compact est ouvert au-dessus pour enregistrer votre praticien."
+      "📋 **Ajout de Soignant Référent** :\nLe formulaire d'ajout rapide est ouvert ci-dessus pour enregistrer votre praticien ou clinique (référent actuel : $doctorName • $hospitalName)."
     else
-      "📋 **Add Provider / Contact**:\n• **Type:** [OB/GYN | Pediatrician | Doula | Midwife | Specialist]\n• **Doctor / Clinic:** [Enter Name]\n• **Hospital Affiliation:** [Preferred Gyn/OB Hospital]\n• **Phone:** [Enter Phone] | **Emergency:** [Enter Number]\n• **Address:** [Enter Address]\n\nThe compact entry card is open above to record your care provider."
+      "📋 **Add Provider / Contact**:\nThe quick entry card is open above to save your practitioner or hospital (current care team: $doctorName • $hospitalName)."
 
     messages.add(
       ChatMessage(
         id = "ai_${System.currentTimeMillis()}",
         sender = "mama_ai",
         text = providerReply,
-        timestamp = "15:31",
+        timestamp = nowStr,
         hasProviderAction = true
       )
     )
     return
   }
 
-  // 3. AMBIGUOUS INPUT -> 1 Concise Clarifying Question
-  val isAmbiguous = q.length < 10 || q == "j'ai mal" || q == "mal" || q == "fatigue" ||
-    q == "crampes" || q == "fever" || q == "pain" || q == "vomissements" || q == "headache"
-
-  if (isAmbiguous) {
-    val clarifyReply = if (language == AppLanguage.FR)
-      "Pourriez-vous préciser où se situe cette gêne, depuis combien de temps elle persiste et si vous notez de la fièvre ou des saignements, afin de vous orienter au mieux ?"
-    else
-      "Could you please clarify exactly where you feel this, how long it has persisted, and if you notice any fever or bleeding, so I can offer grounded guidance?"
-
-    messages.add(
-      ChatMessage(
-        id = "ai_${System.currentTimeMillis()}",
-        sender = "mama_ai",
-        text = clarifyReply,
-        timestamp = "15:31"
-      )
+  // 3. Stream answer from Firebase AI Logic (gemini-3.8-flash), falling back to grounded ACOG/WHO guidance if offline
+  val aiMsgId = "ai_${System.currentTimeMillis()}"
+  messages.add(
+    ChatMessage(
+      id = aiMsgId,
+      sender = "mama_ai",
+      text = if (language == AppLanguage.FR) "Réflexion en cours..." else "Thinking...",
+      timestamp = nowStr
     )
-    return
-  }
+  )
 
-  // 4. MEDICAL & HEALTH DATA ACCESS (ACOG / WHO GROUNDED)
-  val reply = when {
+  scope.launch {
+    val buffer = StringBuilder()
+    var hasStreamed = false
+    val isFrench = language == AppLanguage.FR
+    val contextStr = "Doctor: $doctorName | Clinic: $hospitalName | Patient: ${PmaRepository.patientName}"
+    try {
+      AiAssistantService.streamClinicalAnswer(query, contextStr, isFrench).collect { chunk ->
+        buffer.append(chunk)
+        hasStreamed = true
+        val idx = messages.indexOfFirst { it.id == aiMsgId }
+        if (idx >= 0) {
+          messages[idx] = messages[idx].copy(text = buffer.toString())
+        }
+      }
+    } catch (_: Exception) {
+      // Fallback below when offline or App Check is unavailable
+    }
+
+    if (!hasStreamed || buffer.isBlank()) {
+      val fallback = buildGroundedFallbackReply(q, language, doctorName, hospitalName)
+      val idx = messages.indexOfFirst { it.id == aiMsgId }
+      if (idx >= 0) {
+        messages[idx] = messages[idx].copy(text = fallback)
+      }
+    }
+  }
+}
+
+private fun buildGroundedFallbackReply(
+  q: String,
+  language: AppLanguage,
+  doctorName: String,
+  hospitalName: String
+): String {
+  return when {
     q.contains("estrace") || q.contains("œstrog") || q.contains("estrog") -> {
       if (language == AppLanguage.FR)
-        "**Protocole Médical (Consensus ACOG / ESHRE)** :\n• **Objectif** : Épaississement trilaminaire et préparation endométriale optimale.\n• **Prise** : 1 comprimé le matin et 1 comprimé le soir avec de l'eau à horaires fixes.\n• Confirmez toute adaptation de posologie avec [Doctor's Name]."
+        "**Protocole Médical (Consensus ACOG / ESHRE)** :\n• **Objectif** : Épaississement trilaminaire et préparation endométriale optimale.\n• **Prise** : 1 comprimé le matin et 1 comprimé le soir avec de l'eau à horaires fixes.\n• Confirmez toute adaptation de posologie avec $doctorName."
       else
-        "**Medical Protocol (ACOG / ESHRE Consensus)**:\n• **Goal**: Optimal trilaminar endometrial thickening.\n• **Administration**: 1 tablet AM and 1 tablet PM consistently with water.\n• Always verify dosage specifics with [Doctor's Name]."
+        "**Medical Protocol (ACOG / ESHRE Consensus)**:\n• **Goal**: Optimal trilaminar endometrial thickening.\n• **Administration**: 1 tablet AM and 1 tablet PM consistently with water.\n• Always verify dosage specifics with $doctorName."
     }
     q.contains("120") || q.contains("progest") -> {
       if (language == AppLanguage.FR)
-        "**Règle de Synchronisation (120h)** :\n• L'imprégnation en progestérone doit débuter exactement 120 heures avant l'injection de l'embryon J5.\n• Cette précision aligne la fenêtre d'implantation idéale. Vérifiez l'heure exacte avec [Doctor's Name]."
+        "**Règle de Synchronisation (120h)** :\n• L'imprégnation en progestérone doit débuter exactement 120 heures avant le transfert d'embryon J5.\n• Vérifiez l'heure exacte avec $doctorName ($hospitalName)."
       else
-        "**Synchronization Rule (120h)**:\n• Progesterone administration begins exactly 120 hours prior to Day 5 embryo transfer.\n• This precisely opens the implantation window. Validate your schedule with [Doctor's Name]."
+        "**Synchronization Rule (120h)**:\n• Progesterone administration begins exactly 120 hours prior to Day 5 embryo transfer.\n• Validate your schedule with $doctorName ($hospitalName)."
     }
     q.contains("aliment") || q.contains("nutrition") || q.contains("manger") || q.contains("food") || q.contains("régime") -> {
       if (language == AppLanguage.FR)
-        "**Nutrition & Hydratation T2 (ACOG / OMS)** :\n• **Clés** : Calcium (1000 mg/j), Fer, Folates, et Oméga-3 DHA (développement cérébral fœtal).\n• **Eau** : 2 à 2,5 L/jour (prévient les contractions précoces).\n• **À éviter** : Poissons et viandes crus, fromages non pasteurisés, caféine > 200 mg/j."
+        "**Nutrition & Hydratation (ACOG / OMS)** :\n• **Clés** : Calcium (1000 mg/j), Fer, Folates, et Oméga-3 DHA.\n• **Eau** : 2 à 2,5 L/jour.\n• **À éviter** : Poissons/viandes crus, fromages non pasteurisés, caféine > 200 mg/j."
       else
-        "**T2 Nutrition & Hydration (ACOG / WHO)**:\n• **Key Nutrients**: Calcium (1000 mg/d), Iron, Folate, and Omega-3 DHA (fetal brain growth).\n• **Hydration**: 2 to 2.5 L/day (reduces early contractions).\n• **Avoid**: Raw meats/fish, unpasteurized dairy, caffeine > 200 mg/day."
+        "**Nutrition & Hydration (ACOG / WHO)**:\n• **Key Nutrients**: Calcium (1000 mg/d), Iron, Folate, and Omega-3 DHA.\n• **Hydration**: 2 to 2.5 L/day.\n• **Avoid**: Raw meats/fish, unpasteurized dairy, caffeine > 200 mg/day."
     }
     q.contains("douleur") || q.contains("tiraillement") || q.contains("crampe") || q.contains("pain") || q.contains("twinge") -> {
       if (language == AppLanguage.FR)
-        "**Tiraillements & Ligaments Utérins (ACOG)** :\n• De légers tiraillements pelviens sont fréquents au T2 en raison de l'expansion utérine.\n• Reposez-vous sur le côté gauche avec un coussin.\n• *Alerte* : Si la douleur devient aiguë ou s'accompagne de saignements, contactez [Preferred Gyn/OB Hospital] ou [Doctor's Name]."
+        "**Tiraillements Pelviens (ACOG)** :\n• De légers tiraillements sont fréquents.\n• Reposez-vous sur le côté gauche.\n• *Alerte* : Si la douleur devient aiguë ou s'accompagne de saignements, contactez $hospitalName ou $doctorName."
       else
-        "**Pelvic & Ligament Twinges (ACOG)**:\n• Mild pelvic twinges are common in T2 due to uterine expansion.\n• Rest on your left side with support.\n• *Alert*: If sharp, severe, or accompanied by spotting, contact [Preferred Gyn/OB Hospital] or [Doctor's Name]."
-    }
-    q.contains("valise") || q.contains("maternité") || q.contains("post-partum") || q.contains("postpartum") || q.contains("bébé") -> {
-      if (language == AppLanguage.FR)
-        "**Post-Partum & Premiers Soins (OMS)** :\n• **Maman** : Suivi des lochies (2 à 6 semaines), repos, rééducation périnéale à 6-8 semaines.\n• **Bébé** : Peau à peau précoce, tétées à la demande, couchage strictement sur le dos.\n• Coordonnez vos rendez-vous de contrôle avec [Doctor's Name]."
-      else
-        "**Postpartum & Newborn Basics (WHO)**:\n• **Maternal**: Lochia tracking (2-6 weeks), rest, 6-week pelvic health review.\n• **Infant**: Early skin-to-skin, responsive feeding, back-to-sleep position.\n• Schedule your postpartum visits with [Doctor's Name]."
-    }
-    q.contains("eau") || q.contains("verre") || q.contains("hydrat") || q.contains("water") -> {
-      if (language == AppLanguage.FR)
-        "**Hydratation Quotidienne (ACOG)** :\n• Visez 8 à 10 verres d'eau par jour (~2 à 2,5 L).\n• Soutient le liquide amniotique, la volémie sanguine et prévient la fatigue."
-      else
-        "**Daily Hydration (ACOG)**:\n• Target 8 to 10 glasses daily (~2 to 2.5 L).\n• Supports amniotic fluid, maternal blood volume, and prevents fatigue."
+        "**Pelvic Twinges (ACOG)**:\n• Mild pelvic twinges can occur normally.\n• Rest on your left side with support.\n• *Alert*: If sharp, severe, or accompanied by spotting, contact $hospitalName or $doctorName."
     }
     else -> {
       if (language == AppLanguage.FR)
-        "Merci pour votre question. D'après les recommandations médicales générales (ACOG/OMS), chaque étape de la grossesse est singulière. Notez cette observation pour en discuter avec [Doctor's Name] à [Preferred Gyn/OB Hospital]."
+        "D'après les recommandations médicales générales (ACOG/OMS), notez cette observation dans votre journal pour en discuter lors de votre prochain suivi avec $doctorName à $hospitalName."
       else
-        "Thank you for your question. Based on general clinical guidelines (ACOG/WHO), every pregnancy journey is unique. Please discuss this question with [Doctor's Name] at [Preferred Gyn/OB Hospital]."
+        "Based on general clinical guidelines (ACOG/WHO), log this observation in your journal to review with $doctorName at $hospitalName."
     }
   }
-
-  messages.add(
-    ChatMessage(
-      id = "ai_${System.currentTimeMillis()}",
-      sender = "mama_ai",
-      text = reply,
-      timestamp = "15:31"
-    )
-  )
 }

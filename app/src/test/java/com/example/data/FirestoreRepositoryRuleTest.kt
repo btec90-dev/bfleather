@@ -141,18 +141,25 @@ class FirestoreRepositoryRuleTest : FirestoreEmulatorTestBase() {
   }
 
   @Test
-  fun observeTasks_unauthenticatedUser_failsWithPermissionDenied() = runBlocking {
-    auth.signOut()
-    val repository = FirestoreRepository(firestore, auth)
+  fun crossUserIsolation_bobCannotReadOrWriteAliceMedReminders() = runBlocking {
+    val aliceUid = signInTestUser(ALICE_EMAIL)
+    val aliceRepo = FirestoreRepository(firestore, auth)
+    val remId = "mr_test_${UUID.randomUUID()}"
+    val rem = SyncedMedReminder(id = remId, userId = aliceUid, title = "Test Med", medication = "Estrace", dosage = "2mg", hour = 8, minute = 0)
+    withTimeout(DEFAULT_TIMEOUT_MS) {
+      aliceRepo.saveMedReminder(rem)
+    }
 
+    signInTestUser(BOB_EMAIL)
     try {
-      withTimeout(FLOW_TIMEOUT_MS) {
-        repository.observeTasks("alice_unauth_test").first()
+      withTimeout(DEFAULT_TIMEOUT_MS) {
+        firestore.collection("users").document(aliceUid)
+          .collection("med_reminders").document(remId).get().await()
       }
-      fail("Expected PERMISSION_DENIED when unauthenticated")
+      fail("Expected PERMISSION_DENIED when Bob reads Alice's med reminder")
     } catch (e: Exception) {
       val firestoreEx = checkNotNull(e.unwrapFirestoreException()) {
-        "Expected nested FirebaseFirestoreException, got $e"
+        "Expected FirebaseFirestoreException, got $e"
       }
       assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, firestoreEx.code)
     }

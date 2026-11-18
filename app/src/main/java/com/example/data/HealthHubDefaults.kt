@@ -11,8 +11,20 @@ object HealthHubDefaults {
       minute = 0L,
       repeatDaily = true,
       isEnabled = true,
-      protocolPhase = "Phase 2 • Prépa TEC",
-      notes = "Prendre le matin à 08:00 avec un grand verre d'eau."
+      protocolPhase = "Phase 2 & 3 • Prépa & TEC (TID)",
+      notes = "Prendre le matin à 08:00 avec un grand verre d'eau (1re prise TID)."
+    ),
+    SyncedMedReminder(
+      id = "mr_estrace_midi",
+      title = "Estrace 2 mg (Midi)",
+      medication = "Estradiol (Estrace)",
+      dosage = "2 mg PO (1 comprimé)",
+      hour = 14L,
+      minute = 0L,
+      repeatDaily = true,
+      isEnabled = true,
+      protocolPhase = "Phase 2 & 3 • Prépa & TEC (TID)",
+      notes = "Prendre le midi à 14:00 (2e prise TID, débutée le 09 nov.)."
     ),
     SyncedMedReminder(
       id = "mr_prenatal_am",
@@ -35,32 +47,34 @@ object HealthHubDefaults {
       minute = 0L,
       repeatDaily = true,
       isEnabled = true,
-      protocolPhase = "Phase 2 • Prépa TEC",
-      notes = "Prendre le soir à 20:00 (intervalle régulier 12h)."
+      protocolPhase = "Phase 2 & 3 • Prépa & TEC (TID)",
+      notes = "Prendre le soir à 20:00 (3e prise TID)."
     ),
     SyncedMedReminder(
       id = "mr_progesterone_im",
-      title = "Progestérone IM (50 mg)",
-      medication = "Progestérone en solution huileuse",
-      dosage = "1 mL (50 mg) IM",
+      title = "Progestérone IM (PIO)",
+      medication = "Progestérone dans l'huile",
+      dosage = "1.0 mL (17-18 nov.) -> 1.5 mL (dès 19 nov.)",
       hour = 20L,
       minute = 0L,
       repeatDaily = true,
       isEnabled = true,
       protocolPhase = "Phase 2 & 3 • Soutien Lutéal",
-      notes = "Injection intramusculaire dans le quadrant supéro-externe de la fesse, chaque soir à heure fixe."
+      pillsRemaining = 20L,
+      notes = "17 & 18 nov. : 1.0 mL IM le soir. Dès le 19 nov. : 1.5 mL IM le soir (à ajuster selon prise de sang du 20 nov.). Chauffer la fiole 5 min avant injection."
     ),
     SyncedMedReminder(
       id = "mr_azithromycine",
       title = "Azithromycine (1 000 mg)",
       medication = "Azithromycine",
-      dosage = "2 comprimés (1 000 mg)",
+      dosage = "2 comprimés (1 000 mg PO)",
       hour = 19L,
       minute = 0L,
       repeatDaily = false,
-      isEnabled = true,
-      protocolPhase = "13 nov. • Antibiothérapie TEC",
-      notes = "Prise unique avec de la nourriture (tolérance gastrique)."
+      isEnabled = false,
+      protocolPhase = "13 nov. • Antibiothérapie TEC (Complété)",
+      pillsRemaining = 0L,
+      notes = "Prise unique pré-transfert le 13 nov. avec nourriture (auto-archivée)."
     )
   )
 
@@ -310,86 +324,167 @@ object HealthHubDefaults {
   val initialExpenses = listOf(
     SyncedExpenseRecord(
       id = "exp_1",
-      title = "Monitorage & Échographie RMA East Side",
-      amount = 250.0,
+      title = "Progyny / Pharmacy Statement",
+      amount = 30.0,
+      insurancePaid = 3547.44,
+      totalBill = 3577.44,
       currency = "USD",
-      category = "Médical & Clinique",
-      phase = "Protocole PMA",
-      dateStr = "05 nov. 2026",
-      notes = "Copay visite échographie + bilan sanguin E2/LH"
+      category = "Medical",
+      phase = "IVF / Clinic",
+      paymentStatus = "Insurance Copay",
+      dateStr = "05 Nov 2026",
+      notes = "Progyny medical statement & pharmacy statement",
+      addedBy = "Fatou"
     ),
     SyncedExpenseRecord(
       id = "exp_2",
       title = "Ordonnance Estrace 2 mg, Progestérone IM & Azithromycine",
       amount = 85.0,
+      insurancePaid = 0.0,
+      totalBill = 85.0,
       currency = "USD",
-      category = "Médicaments & Vitamines",
-      phase = "Protocole PMA",
-      dateStr = "06 nov. 2026",
-      notes = "Pharmacie spécialisée fertilité"
+      category = "Medical",
+      phase = "IVF / Clinic",
+      paymentStatus = "Out-of-Pocket",
+      dateStr = "06 Nov 2026",
+      notes = "Pharmacie spécialisée fertilité",
+      addedBy = "Partner"
     ),
     SyncedExpenseRecord(
       id = "exp_3",
       title = "Vitamines Prénatales, Oméga-3 DHA & Fer doux",
-      amount = 34.50,
-      currency = "EUR",
-      category = "Médicaments & Vitamines",
-      phase = "Grossesse",
-      dateStr = "08 nov. 2026",
-      notes = "Cure trimestrielle"
+      amount = 38.00,
+      insurancePaid = 0.0,
+      totalBill = 38.00,
+      currency = "USD",
+      category = "For the Mom",
+      phase = "Pregnancy & Baby",
+      paymentStatus = "Out-of-Pocket",
+      dateStr = "08 Nov 2026",
+      notes = "Cure trimestrielle",
+      addedBy = "Fatou"
     ),
     SyncedExpenseRecord(
       id = "exp_4",
       title = "Berceau Cododo & Moniteur Bébé",
-      amount = 290.0,
-      currency = "EUR",
-      category = "Équipement Bébé",
-      phase = "Bébé",
-      dateStr = "10 nov. 2026",
-      notes = "Préparation chambre bébé"
+      amount = 315.00,
+      insurancePaid = 0.0,
+      totalBill = 315.00,
+      currency = "USD",
+      category = "Baby",
+      phase = "Pregnancy & Baby",
+      paymentStatus = "Out-of-Pocket",
+      dateStr = "10 Nov 2026",
+      notes = "Préparation chambre bébé",
+      addedBy = "Partner"
     )
+  )
+
+  val initialPartnerTodoItems = listOf(
+    SyncedChecklistItem(id = "pp_1", listKey = "partner_todo", label = "Pick up Estrace 2 mg & Progesterone IM refill", isChecked = false, sortOrder = 50L, addedBy = "Partner"),
+    SyncedChecklistItem(id = "pp_2", listKey = "partner_todo", label = "Confirm RMA East Side ultrasound insurance copay", isChecked = true, sortOrder = 51L, addedBy = "Fatou"),
+    SyncedChecklistItem(id = "pp_3", listKey = "partner_todo", label = "Prepare fragrance-free checklist for Nov 18 TEC day", isChecked = false, sortOrder = 52L, addedBy = "Fatou"),
+    SyncedChecklistItem(id = "pp_4", listKey = "partner_todo", label = "Scan pharmacy receipts into Expenses / Wallet", isChecked = false, sortOrder = 53L, addedBy = "Partner")
   )
 
   val initialCareProviders = listOf(
     SyncedCareProvider(
       id = "cp_1",
       providerType = "Médecin Référent PMA",
-      name = "Dr. Anate Brauer",
-      affiliation = "RMA of New York — Cabinet East Side",
-      phone = "+1 (212) 756-5777",
-      emergencyContact = "+1 (212) 756-5777",
+      name = "Dr. Anate Brauer — RMA East Side",
+      affiliation = "Reproductive Endocrinologist (IVF / FET)",
+      phone = "212-756-5777",
+      emergencyContact = "212-756-5777",
       address = "635 Madison Ave, 10th Floor, New York, NY 10022",
-      portalLink = "https://www.rmany.com"
+      portalLink = "https://www.rmany.com",
+      email = "abrauer@rmany.com",
+      notes = "Médecin Référent PMA & FIV. Prises de sang & échos le matin 7h-9h30.",
+      isEmergency = true,
+      category = "MEDICAL"
     ),
     SyncedCareProvider(
       id = "cp_2",
       providerType = "Embryologiste",
-      name = "Alex (Laboratoire Embryologie)",
-      affiliation = "RMA of New York — Labo IVF & TEC",
-      phone = "+1 (212) 756-5777",
-      emergencyContact = "+1 (212) 756-5777",
-      address = "635 Madison Ave, 10th Floor, New York, NY 10022",
-      portalLink = "Portail Patient RMA"
+      name = "Alex — Laboratoire Embryologie",
+      affiliation = "RMA of New York — Labo FIV",
+      phone = "212-756-5777",
+      emergencyContact = "212-756-5777",
+      address = "635 Madison Ave, New York, NY 10022",
+      portalLink = "https://www.rmany.com",
+      email = "embryology@rmany.com",
+      notes = "En charge du blastocyste J5 euploïde masculin (Transfert TEC 18 nov.).",
+      isEmergency = false,
+      category = "MEDICAL"
     ),
     SyncedCareProvider(
       id = "cp_3",
-      providerType = "Centre Chirurgical",
+      providerType = "Centre Ambulatoire",
       name = "Gramercy Surgery Center",
-      affiliation = "Hystéroscopie & Procédures",
-      phone = "+1 (212) 674-0900",
-      emergencyContact = "+1 (212) 674-0900",
+      affiliation = "Ambulatory Surgery (Hystéroscopie)",
+      phone = "212-674-2000",
+      emergencyContact = "212-674-2000",
       address = "380 2nd Avenue, Suite 1000, New York, NY 10010",
-      portalLink = ""
+      portalLink = "",
+      email = "info@gramercysurgery.com",
+      notes = "Interventions chirurgicales ambulatoires et contrôle endométrial.",
+      isEmergency = false,
+      category = "CLINIC"
     ),
     SyncedCareProvider(
       id = "cp_4",
-      providerType = "Urgence",
-      name = "Urgences Obstétricales / SAMU",
-      affiliation = "Service 24h/24 — 7j/7",
-      phone = "911",
-      emergencyContact = "15",
-      address = "Hôpital le plus proche / Urgences Maternité",
-      portalLink = ""
+      providerType = "Gynécologue-Obstétricien",
+      name = "Dr. Laurent (OB/GYN)",
+      affiliation = "Gynécologue-Obstétricien • Centre de Santé Maternelle",
+      phone = "+1 (212) 555-0144",
+      emergencyContact = "911",
+      address = "Centre de Santé Maternelle, New York, NY",
+      portalLink = "Portail Maternité",
+      email = "dr.laurent@maternite-nyc.org",
+      notes = "Suivi maternité et grossesse après diplôme RMA (Phase 4).",
+      isEmergency = true,
+      category = "MEDICAL"
+    ),
+    SyncedCareProvider(
+      id = "cp_5",
+      providerType = "Pharmacie Spécialisée FIV",
+      name = "Mandell's Clinical Pharmacy",
+      affiliation = "Fertility Specialty Pharmacy",
+      phone = "877-252-0553",
+      emergencyContact = "877-252-0553",
+      address = "Somerset, NJ (Livraison express coursier NYC)",
+      portalLink = "https://mymandellspharmacy.com",
+      email = "orders@mymandellspharmacy.com",
+      notes = "Fournisseur officiel Estrace, PIO (Progestérone IM), aiguilles et seringues.",
+      isEmergency = false,
+      category = "PHARMACY"
+    ),
+    SyncedCareProvider(
+      id = "cp_6",
+      providerType = "Assurance PMA / Progyny",
+      name = "Progyny Patient Care Advocate (PCA)",
+      affiliation = "Fertility Insurance & Prior Authorizations (Member ID •••• 4071)",
+      phone = "888-597-5065",
+      emergencyContact = "888-597-5065",
+      address = "1359 Broadway, 2nd Floor, New York, NY 10018",
+      portalLink = "https://mycompany.progyny.com",
+      email = "pca@progyny.com",
+      notes = "Dossier Fertilité Smart Cycles & approbations préalables.",
+      isEmergency = false,
+      category = "INSURANCE"
+    ),
+    SyncedCareProvider(
+      id = "cp_7",
+      providerType = "Conjoint & Partenaire",
+      name = "Bala — Partenaire PMA",
+      affiliation = "Contact d'Urgence Prioritaire",
+      phone = "929-900-5110",
+      emergencyContact = "929-900-5110",
+      address = "New York, NY",
+      portalLink = "",
+      email = "bala@balatec.com",
+      notes = "Conjoint de Fatou, disponible 24h/24 pour urgences ou transports.",
+      isEmergency = true,
+      category = "FAMILY"
     )
   )
 }

@@ -41,6 +41,9 @@ import java.util.Calendar
 fun ProtocolScreen(
   protocolSteps: List<SyncedProtocolStep>,
   immediateTasks: List<TaskItem>,
+  activePartnerProfile: String = "Fatou",
+  isBetaHcgConfirmed: Boolean = false,
+  onToggleBetaHcg: (Boolean) -> Unit = {},
   onSaveStep: (SyncedProtocolStep) -> Unit,
   onToggleStep: (SyncedProtocolStep) -> Unit,
   onDeleteStep: (String) -> Unit,
@@ -111,6 +114,10 @@ fun ProtocolScreen(
           set(Calendar.HOUR_OF_DAY, 8)
           set(Calendar.MINUTE, 0)
         }
+        hour < 14 -> {
+          set(Calendar.HOUR_OF_DAY, 14)
+          set(Calendar.MINUTE, 0)
+        }
         hour < 20 -> {
           set(Calendar.HOUR_OF_DAY, 20)
           set(Calendar.MINUTE, 0)
@@ -173,7 +180,11 @@ fun ProtocolScreen(
               verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
               Text(
-                text = "📋 Protocole PMA & Étapes de Grossesse : Calendrier Directeur",
+                text = if (isFr) {
+                  "📋 Protocole PMA & Étapes de Grossesse : Calendrier Directeur"
+                } else {
+                  "📋 IVF / FET Protocol & Pregnancy Stages: Master Calendar"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = theme.primaryText,
@@ -182,11 +193,23 @@ fun ProtocolScreen(
 
               HorizontalDivider(color = theme.border)
 
-              ProtocolHeaderLine("🏢 Centre :", "${PmaRepository.clinicName} (${PmaRepository.clinicAddress})", theme)
-              ProtocolHeaderLine("🩺 Médecin référent :", PmaRepository.doctorName, theme)
-              ProtocolHeaderLine("👩‍⚕️ Équipe & Coordonnées :", "${PmaRepository.embryologistInfo}.", theme)
-              ProtocolHeaderLine("👤 Patiente :", PmaRepository.patientName, theme)
-              ProtocolHeaderLine("🎯 Objectif :", PmaRepository.objective, theme, highlightValue = true)
+              ProtocolHeaderLine(if (isFr) "🏢 Centre :" else "🏢 Clinic:", "${PmaRepository.clinicName} (${PmaRepository.clinicAddress})", theme)
+              ProtocolHeaderLine(if (isFr) "🩺 Médecin référent :" else "🩺 Referring Doctor:", PmaRepository.doctorName, theme)
+              ProtocolHeaderLine(if (isFr) "👩‍⚕️ Équipe & Coordonnées :" else "👩‍⚕️ Team & Contact:", "${PmaRepository.embryologistInfo}.", theme)
+              ProtocolHeaderLine(if (isFr) "👤 Patiente :" else "👤 Patient:", PmaRepository.patientName, theme)
+              ProtocolHeaderLine(if (isFr) "🎯 Objectif :" else "🎯 Objective:", PmaRepository.objective, theme, highlightValue = true)
+              ProtocolHeaderLine(
+                label = if (isFr) "🗓️ Terme Théorique Calculé (DPA) :" else "🗓️ Calculated Due Date (EDD):",
+                value = if (isFr) {
+                  if (isBetaHcgConfirmed) "Mercredi 6 août 2027 (Débloqué ✓ — 40 SA)"
+                  else "Mercredi 6 août 2027 (40 SA, à débloquer après confirmation le 27 nov.)"
+                } else {
+                  if (isBetaHcgConfirmed) "Wednesday, August 6, 2027 (Unlocked ✓ — 40 weeks)"
+                  else "Wednesday, August 6, 2027 (40 weeks, unlocks upon Nov 27 Beta-hCG confirmation)"
+                },
+                theme = theme,
+                highlightValue = isBetaHcgConfirmed
+              )
 
               // Progress Bar
               Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -298,7 +321,7 @@ fun ProtocolScreen(
                   Spacer(modifier = Modifier.width(8.dp))
                   Column {
                     Text(
-                      text = if (isFr) "Prochaine prise Estrace 2 mg PO (08h & 20h)" else "Next Dose Estrace 2 mg PO (8 AM & 8 PM)",
+                      text = if (isFr) "Prochaine prise Estrace 2 mg PO (TID : 08h, 14h, 20h)" else "Next Dose Estrace 2 mg PO (TID: 8 AM, 2 PM, 8 PM)",
                       style = MaterialTheme.typography.labelSmall,
                       fontWeight = FontWeight.Bold,
                       color = theme.primaryText
@@ -372,13 +395,13 @@ fun ProtocolScreen(
               ) {
                 Column(modifier = Modifier.weight(1f)) {
                   Text(
-                    text = "📊 1. Tableau de Bord Immédiat",
+                    text = if (isFr) "📊 1. Tableau de Bord Immédiat" else "📊 1. Immediate Dashboard",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     color = theme.primaryText
                   )
                   Text(
-                    text = "📌 Actions & Statuts Cliniques",
+                    text = if (isFr) "📌 Actions & Statuts Cliniques" else "📌 Immediate Clinical Actions & Statuses",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = theme.accent
@@ -405,7 +428,9 @@ fun ProtocolScreen(
                   Text(
                     text = if (isFr) "Ajouter" else "Add",
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false
                   )
                 }
               }
@@ -417,12 +442,40 @@ fun ProtocolScreen(
                   color = theme.mutedText
                 )
               } else {
-                immediateTasks.forEach { task ->
+                val partitionedTasks = remember(immediateTasks, currentEpochTime) {
+                  com.example.data.DateSortUtils.partitionUpcomingFirst(
+                    items = immediateTasks,
+                    nowMillis = currentEpochTime,
+                    epochProvider = { com.example.data.DateSortUtils.taskEpochMillis(it) },
+                    completedProvider = { it.isCompleted }
+                  )
+                }
+                partitionedTasks.upcoming.forEach { task ->
                   ImmediateClinicalActionCard(
                     task = task,
+                    isPastItem = false,
                     theme = theme,
                     language = language,
                     onToggle = { onToggleImmediateTask(task) },
+                    onToggleAlarm = {
+                      val nextAlarm = !task.hasAlarm
+                      val updated = task.copy(hasAlarm = nextAlarm)
+                      val epoch = com.example.data.DateSortUtils.taskEpochMillis(updated)
+                      if (nextAlarm && epoch != Long.MAX_VALUE) {
+                        com.example.alarm.AlarmScheduler.scheduleAppointmentAlarm(
+                          context = context,
+                          itemId = updated.id,
+                          title = updated.title,
+                          details = updated.details.ifBlank { updated.category },
+                          eventEpochMillis = epoch,
+                          offsetMinutes = updated.alarmTimeMinutesBefore.toLong()
+                        )
+                        Toast.makeText(context, com.example.i18n.Strings.t("alarm_scheduled_msg", language), Toast.LENGTH_SHORT).show()
+                      } else {
+                        com.example.alarm.AlarmScheduler.cancelAppointmentAlarm(context, updated.id)
+                      }
+                      onSaveImmediateTask(updated)
+                    },
                     onEdit = {
                       editingImmediateTask = task
                       showImmediateTaskModal = true
@@ -432,6 +485,55 @@ fun ProtocolScreen(
                       Toast.makeText(context, if (isFr) "Action supprimée" else "Action deleted", Toast.LENGTH_SHORT).show()
                     }
                   )
+                }
+                if (partitionedTasks.past.isNotEmpty()) {
+                  var showPastTasks by remember { mutableStateOf(false) }
+                  Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.background,
+                    border = BorderStroke(0.8.dp, theme.border),
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .clickable { showPastTasks = !showPastTasks }
+                  ) {
+                    Row(
+                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = "${com.example.i18n.Strings.t("past_divider", language)} (${partitionedTasks.past.size})",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.mutedText
+                      )
+                      Icon(
+                        if (showPastTasks) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = theme.mutedText
+                      )
+                    }
+                  }
+                  if (showPastTasks) {
+                    partitionedTasks.past.forEach { task ->
+                      ImmediateClinicalActionCard(
+                        task = task,
+                        isPastItem = true,
+                        theme = theme,
+                        language = language,
+                        onToggle = { onToggleImmediateTask(task) },
+                        onToggleAlarm = {},
+                        onEdit = {
+                          editingImmediateTask = task
+                          showImmediateTaskModal = true
+                        },
+                        onDelete = {
+                          onDeleteImmediateTask(task.id)
+                          Toast.makeText(context, if (isFr) "Action supprimée" else "Action deleted", Toast.LENGTH_SHORT).show()
+                        }
+                      )
+                    }
+                  }
                 }
               }
             }
@@ -449,7 +551,11 @@ fun ProtocolScreen(
               verticalAlignment = Alignment.CenterVertically
             ) {
               Text(
-                text = "🗓️ 2. Chronologie Complète du Parcours Médical",
+                text = if (isFr) {
+                  "🗓️ 2. Calendrier Directeur PMA & Grossesse (Phases 1 à 4)"
+                } else {
+                  "🗓️ 2. Complete IVF & Pregnancy Director Timeline (Phases 1 to 4)"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = theme.primaryText,
@@ -469,7 +575,7 @@ fun ProtocolScreen(
               ) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(if (isFr) "Étape" else "Step", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(if (isFr) "Étape" else "Step", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
               }
             }
 
@@ -490,7 +596,15 @@ fun ProtocolScreen(
                     }
                   },
                   modifier = Modifier.testTag("protocol_phase_tab_$phaseId"),
-                  label = { Text(label, fontSize = 11.5.sp, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
+                  label = {
+                    Text(
+                      text = label,
+                      fontSize = 11.5.sp,
+                      fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                      maxLines = 1,
+                      softWrap = false
+                    )
+                  },
                   colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = theme.accent,
                     selectedLabelColor = Color.White
@@ -517,23 +631,156 @@ fun ProtocolScreen(
         }
 
         items(visiblePhases, key = { "phase_${it.phaseId}" }) { phaseMeta ->
-          val phaseSteps = protocolSteps
-            .filter { it.phaseId.toInt() == phaseMeta.phaseId }
-            .sortedBy { it.sortOrder }
-          val phaseDone = phaseSteps.count { it.isCompleted }
-          val isExpanded = expandedPhases[phaseMeta.phaseId] ?: phaseMeta.defaultExpanded
+          val isPhase4Locked = phaseMeta.phaseId == 4 && !isBetaHcgConfirmed
 
-          Surface(
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("protocol_phase_card_${phaseMeta.phaseId}"),
-            shape = RoundedCornerShape(18.dp),
-            color = theme.cardSurface,
-            border = BorderStroke(
-              width = if (phaseMeta.phaseId == 2) 1.3.dp else 1.dp,
-              color = if (phaseMeta.phaseId == 2) theme.accent.copy(alpha = 0.45f) else theme.border
-            )
-          ) {
+          if (isPhase4Locked) {
+            Surface(
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("protocol_phase_card_4_locked"),
+              shape = RoundedCornerShape(18.dp),
+              color = theme.cardSurface,
+              border = BorderStroke(1.2.dp, theme.accent.copy(alpha = 0.35f))
+            ) {
+              Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Text(text = "🔒", fontSize = 20.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                      Text(
+                        text = if (isFr) "Phase 4 : Suivi Obstétrical & Maternité" else "Phase 4: Obstetrics & Maternity",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.primaryText
+                      )
+                      Text(
+                        text = if (isFr) "Mode Veille (En attente confirmation 27 nov.)" else "Standby Mode (Awaiting Nov 27 confirmation)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = theme.accent,
+                        fontWeight = FontWeight.SemiBold
+                      )
+                    }
+                  }
+                  Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xFFFEF3C7)
+                  ) {
+                    Text(
+                      text = if (isFr) "EN VEILLE" else "STANDBY",
+                      modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                      style = MaterialTheme.typography.labelSmall,
+                      fontSize = 10.sp,
+                      fontWeight = FontWeight.Bold,
+                      color = Color(0xFFB45309)
+                    )
+                  }
+                }
+
+                Surface(
+                  shape = RoundedCornerShape(10.dp),
+                  color = theme.background,
+                  border = BorderStroke(0.8.dp, theme.border),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                      text = if (isFr) "🗓️ Terme Théorique Calculé (DPA — 40 SA)" else "🗓️ Theoretical Due Date (EDD — 40 weeks)",
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = FontWeight.Bold,
+                      color = theme.accent
+                    )
+                    Text(
+                      text = if (isFr)
+                        "Mercredi 6 août 2027 (basé sur un transfert de blastocyste J5 le 18 novembre 2026). Révélé et activé dès confirmation biologique."
+                      else
+                        "Wednesday, August 6, 2027 (based on Day 5 blastocyst transfer on November 18, 2026). Fully unlocked upon biological confirmation.",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = theme.primaryText
+                    )
+                  }
+                }
+
+                Text(
+                  text = if (isFr)
+                    "Verrouillé en attente des résultats sanguins du 27 novembre 2026 (Prise de sang Bêta-hCG sérique #1 à 9h30 🤞). Utilisez le commutateur ou le bouton pour débloquer le suivi de grossesse jusqu'à l'accouchement."
+                  else
+                    "Locked awaiting bloodwork results on November 27, 2026 (Serum Beta-hCG blood test #1 at 9:30 AM 🤞). Toggle the switch or tap the button to unlock full pregnancy care through delivery.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = theme.mutedText,
+                  lineHeight = 18.sp
+                )
+
+                Surface(
+                  shape = RoundedCornerShape(12.dp),
+                  color = theme.background,
+                  border = BorderStroke(1.dp, theme.border),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = if (isFr) "Confirmation Bêta-hCG (27 nov.)" else "Beta-hCG Confirmation (Nov 27)",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.primaryText
+                      )
+                      Text(
+                        text = if (isFr) "Basculer pour débloquer la phase 4" else "Toggle to unlock phase 4",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = theme.mutedText
+                      )
+                    }
+                    Switch(
+                      checked = isBetaHcgConfirmed,
+                      onCheckedChange = { onToggleBetaHcg(it) },
+                      modifier = Modifier.testTag("switch_beta_hcg_phase_4")
+                    )
+                  }
+                }
+
+                Button(
+                  onClick = { onToggleBetaHcg(true) },
+                  colors = ButtonDefaults.buttonColors(containerColor = theme.accent),
+                  shape = RoundedCornerShape(12.dp),
+                  modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("unlock_phase_4_button")
+                ) {
+                  Icon(Icons.Default.LockOpen, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text(
+                    text = if (isFr) "🔓 Confirmer Bêta-hCG (27 nov.) & Débloquer" else "🔓 Confirm Beta-hCG (Nov 27) & Unlock",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                  )
+                }
+              }
+            }
+          } else {
+            val phaseSteps = protocolSteps
+              .filter { it.phaseId.toInt() == phaseMeta.phaseId }
+              .sortedBy { it.sortOrder }
+            val phaseDone = phaseSteps.count { it.isCompleted }
+            val isExpanded = expandedPhases[phaseMeta.phaseId] ?: phaseMeta.defaultExpanded
+
+            Surface(
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("protocol_phase_card_${phaseMeta.phaseId}"),
+              shape = RoundedCornerShape(18.dp),
+              color = theme.cardSurface,
+              border = BorderStroke(
+                width = if (phaseMeta.phaseId == 2) 1.3.dp else 1.dp,
+                color = if (phaseMeta.phaseId == 2) theme.accent.copy(alpha = 0.45f) else theme.border
+              )
+            ) {
             Column(modifier = Modifier.padding(12.dp)) {
               // Phase Collapsible Header
               Row(
@@ -610,6 +857,53 @@ fun ProtocolScreen(
                   modifier = Modifier.padding(top = 8.dp),
                   verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                  if (phaseMeta.phaseId == 4) {
+                    Surface(
+                      shape = RoundedCornerShape(12.dp),
+                      color = Color(0xFFF0FDF4),
+                      border = BorderStroke(1.dp, Color(0xFF86EFAC)),
+                      modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+                    ) {
+                      Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.SpaceBetween,
+                          verticalAlignment = Alignment.CenterVertically
+                        ) {
+                          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Text("🟢", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                              text = if (isFr) "Bêta-hCG Confirmé (27 nov.) — Maternité Débloquée 🎉" else "Beta-hCG Confirmed (Nov 27) — Maternity Unlocked 🎉",
+                              style = MaterialTheme.typography.labelMedium,
+                              fontWeight = FontWeight.Bold,
+                              color = Color(0xFF15803D)
+                            )
+                          }
+                          Switch(
+                            checked = isBetaHcgConfirmed,
+                            onCheckedChange = { onToggleBetaHcg(it) },
+                            modifier = Modifier.testTag("switch_beta_hcg_unlocked")
+                          )
+                        }
+                        Text(
+                          text = if (isFr)
+                            "🗓️ Terme Théorique Calculé (DPA — 40 SA) : Mercredi 6 août 2027 (Transfert J5 le 18 nov. 2026)"
+                          else
+                            "🗓️ Calculated Due Date (EDD — 40 weeks): Wednesday, August 6, 2027 (D5 transfer Nov 18, 2026)",
+                          style = MaterialTheme.typography.labelSmall,
+                          fontWeight = FontWeight.Bold,
+                          color = Color(0xFF15803D)
+                        )
+                      }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    PregnancyMilestonesSection(
+                      currentWeek = 4,
+                      theme = theme,
+                      language = language
+                    )
+                  }
                   if (phaseSteps.isEmpty()) {
                     Text(
                       text = if (isFr) "Aucune étape dans cette phase." else "No steps in this phase.",
@@ -617,15 +911,46 @@ fun ProtocolScreen(
                       color = theme.mutedText
                     )
                   } else {
-                    phaseSteps.forEach { step ->
+                    val partitionedSteps = remember(phaseSteps, currentEpochTime) {
+                      com.example.data.DateSortUtils.partitionUpcomingFirst(
+                        items = phaseSteps,
+                        nowMillis = currentEpochTime,
+                        epochProvider = { com.example.data.DateSortUtils.protocolStepEpochMillis(it) },
+                        completedProvider = { it.isCompleted }
+                      )
+                    }
+                    val firstUncompletedId = partitionedSteps.upcoming.firstOrNull { !it.isCompleted }?.id
+                    partitionedSteps.upcoming.forEach { step ->
+                      val isNextActive = step.id == firstUncompletedId
                       ProtocolTimelineStepCard(
                         step = step,
+                        isNextActive = isNextActive,
+                        isPastItem = false,
                         theme = theme,
                         language = language,
                         countdownText = if (step.targetEpochMillis > 0L && !step.isCompleted) {
                           formatLiveCountdown(step.targetEpochMillis)
                         } else null,
                         onToggle = { onToggleStep(step) },
+                        onToggleAlarm = {
+                          val nextAlarm = !step.hasAlarm
+                          val updated = step.copy(hasAlarm = nextAlarm)
+                          val epoch = com.example.data.DateSortUtils.protocolStepEpochMillis(updated)
+                          if (nextAlarm && epoch != Long.MAX_VALUE) {
+                            com.example.alarm.AlarmScheduler.scheduleAppointmentAlarm(
+                              context = context,
+                              itemId = updated.id,
+                              title = updated.stepName,
+                              details = updated.details.ifBlank { updated.medication },
+                              eventEpochMillis = epoch,
+                              offsetMinutes = updated.alarmOffsetMinutes
+                            )
+                            Toast.makeText(context, com.example.i18n.Strings.t("alarm_scheduled_msg", language), Toast.LENGTH_SHORT).show()
+                          } else {
+                            com.example.alarm.AlarmScheduler.cancelAppointmentAlarm(context, updated.id)
+                          }
+                          onSaveStep(updated)
+                        },
                         onEdit = {
                           editingStep = step
                           modalInitialPhaseId = step.phaseId.toInt()
@@ -643,7 +968,206 @@ fun ProtocolScreen(
                         }
                       )
                     }
+                    if (partitionedSteps.past.isNotEmpty()) {
+                      Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                      ) {
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = theme.border)
+                        Surface(
+                          shape = RoundedCornerShape(100.dp),
+                          color = theme.background,
+                          border = BorderStroke(0.6.dp, theme.border)
+                        ) {
+                          Text(
+                            text = "${com.example.i18n.Strings.t("past_divider", language)} (${partitionedSteps.past.size})",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = theme.mutedText
+                          )
+                        }
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = theme.border)
+                      }
+                      partitionedSteps.past.forEach { step ->
+                        ProtocolTimelineStepCard(
+                          step = step,
+                          isPastItem = true,
+                          theme = theme,
+                          language = language,
+                          countdownText = null,
+                          onToggle = { onToggleStep(step) },
+                          onToggleAlarm = {},
+                          onEdit = {
+                            editingStep = step
+                            modalInitialPhaseId = step.phaseId.toInt()
+                            modalInitialDate = step.dateStr
+                            showStepModal = true
+                          },
+                          onCopy = {
+                            val copyText = "${step.dateStr} • ${step.stepName}\n${step.details}"
+                            clipboardManager.setText(AnnotatedString(copyText))
+                            Toast.makeText(context, if (isFr) "Étape copiée !" else "Copied!", Toast.LENGTH_SHORT).show()
+                          },
+                          onDelete = {
+                            onDeleteStep(step.id)
+                            Toast.makeText(context, if (isFr) "Étape supprimée" else "Deleted", Toast.LENGTH_SHORT).show()
+                          }
+                        )
+                      }
+                    }
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // -------------------------------------------------------------
+      // SECTION 3: 💊 3. Mémo Récapitulatif des Posologies Actuelles (17–20 Nov.)
+      // -------------------------------------------------------------
+        item {
+          Surface(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("protocol_section_3_memo"),
+            shape = RoundedCornerShape(18.dp),
+            color = theme.cardSurface,
+            border = BorderStroke(1.2.dp, theme.accent.copy(alpha = 0.35f))
+          ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(theme.accent.copy(alpha = 0.15f)),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Text("💊", fontSize = 16.sp)
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = if (isFr) "3. Mémo Récapitulatif des Posologies Actuelles" else "3. Current Medication Dosages Summary",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = theme.primaryText
+                  )
+                  Text(
+                    text = if (isFr) "Fenêtre critique du 17 au 20 nov. 2026 • Soutien de la phase lutéale" else "Critical window Nov 17–20, 2026 • Luteal Phase Support",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = theme.mutedText
+                  )
+                }
+              }
+
+              // Card 1: Estrace TID
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = theme.background,
+                border = BorderStroke(0.6.dp, theme.border)
+              ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Text(
+                      text = "💊 Estrace 2 mg PO (TID)",
+                      style = MaterialTheme.typography.bodyMedium,
+                      fontWeight = FontWeight.Bold,
+                      color = theme.accent
+                    )
+                    Surface(
+                      shape = RoundedCornerShape(6.dp),
+                      color = theme.accent.copy(alpha = 0.12f)
+                    ) {
+                      Text(
+                        text = "3x / jour",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.accent,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                      )
+                    }
+                  }
+                  Text(
+                    text = "• Posologie active : 1 comprimé de 2 mg par voie orale 3 fois par jour (Matin 08h00, Midi 14h00, Soir 20h00 en continu).\n• Historique : Débuté à 2 mg PO 2x/j (AM & PM) du 05 au 08 nov. (Cycle Start), augmenté à 3x/j (TID) à partir du 09 nov.\n• Continuité : Maintenir sans aucune interruption.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.primaryText,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                  )
+                }
+              }
+
+              // Card 2: Progestérone IM (PIO)
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = theme.background,
+                border = BorderStroke(0.6.dp, theme.border)
+              ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Text(
+                      text = "💉 Progestérone IM (PIO)",
+                      style = MaterialTheme.typography.bodyMedium,
+                      fontWeight = FontWeight.Bold,
+                      color = Color(0xFFD97706)
+                    )
+                    Surface(
+                      shape = RoundedCornerShape(6.dp),
+                      color = Color(0xFFD97706).copy(alpha = 0.12f)
+                    ) {
+                      Text(
+                        text = "IM Soir",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFD97706),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                      )
+                    }
+                  }
+                  Text(
+                    text = "• 17 & 18 nov. : 1.0 mL IM une fois par jour le soir à heure régulière (20h00).\n• À partir du 19 nov. : Augmentation à 1.5 mL IM Daily chaque soir.\n• 20 nov. : Progesterone Check @ 9:30 AM au laboratoire RMA (poursuite 1.5 mL IM ; posologie susceptible d'être ajustée selon le taux sérique).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.primaryText,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                  )
+                }
+              }
+
+              // Card 3: Azithromycine & Consignes Clés
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = theme.background,
+                border = BorderStroke(0.6.dp, theme.border)
+              ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                  Text(
+                    text = "🩺 Antibioprophylaxie & Étapes Clés",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.primaryText
+                  )
+                  Text(
+                    text = "• Azithromycine 1 000 mg PO : Prise unique complétée le 13 nov. avec nourriture.\n• 18 nov. (Aujourd'hui) : TEC à 14h00 EST (Vessie pleine, sans parfum). Continuer Estrace 2 mg TID + PIO 1 mL IM.\n• 27 nov. : Pregnancy bloodwork (Bêta-hCG) @ 9:30 AM 🤞 (débloque le suivi complet Phase 4 Maternité).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.mutedText,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                  )
                 }
               }
             }
@@ -682,6 +1206,7 @@ fun ProtocolScreen(
   if (showImmediateTaskModal) {
     ProtocolImmediateTaskDialog(
       existingTask = editingImmediateTask,
+      activePartnerProfile = activePartnerProfile,
       theme = theme,
       language = language,
       onSave = { savedTask ->
@@ -704,6 +1229,7 @@ fun ProtocolScreen(
       initialPhaseId = modalInitialPhaseId,
       initialDateStr = modalInitialDate,
       nextSortOrder = (protocolSteps.maxOfOrNull { it.sortOrder } ?: 32L) + 1L,
+      activePartnerProfile = activePartnerProfile,
       theme = theme,
       language = language,
       onSave = { savedStep ->
@@ -770,15 +1296,17 @@ private fun ProtocolHeaderLine(
 @Composable
 private fun ImmediateClinicalActionCard(
   task: TaskItem,
+  isPastItem: Boolean = false,
   theme: ThemeColors,
   language: AppLanguage,
   onToggle: () -> Unit,
+  onToggleAlarm: () -> Unit,
   onEdit: () -> Unit,
   onDelete: () -> Unit
 ) {
   val isFr = language == AppLanguage.FR
-  val bgColor = if (task.isCompleted) theme.background else theme.accent.copy(alpha = 0.08f)
-  val borderColor = if (task.isCompleted) theme.border else theme.accent
+  val bgColor = if (task.isCompleted || isPastItem) theme.background else theme.accent.copy(alpha = 0.08f)
+  val borderColor = if (task.isCompleted || isPastItem) theme.border else theme.accent
 
   Surface(
     modifier = Modifier
@@ -786,7 +1314,7 @@ private fun ImmediateClinicalActionCard(
       .testTag("protocol_immediate_item_${task.id}"),
     shape = RoundedCornerShape(14.dp),
     color = bgColor,
-    border = BorderStroke(if (task.isCompleted) 0.9.dp else 1.5.dp, borderColor)
+    border = BorderStroke(if (task.isCompleted || isPastItem) 0.9.dp else 1.5.dp, borderColor)
   ) {
     Column(
       modifier = Modifier.padding(12.dp),
@@ -833,6 +1361,20 @@ private fun ImmediateClinicalActionCard(
                 color = if (task.isCompleted) Color(0xFF15803D) else theme.accent
               )
             }
+            if (isPastItem) {
+              Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = theme.border.copy(alpha = 0.45f)
+              ) {
+                Text(
+                  text = com.example.i18n.Strings.t("past_badge", language),
+                  modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                  style = MaterialTheme.typography.labelSmall,
+                  fontSize = 10.sp,
+                  color = theme.mutedText
+                )
+              }
+            }
             if (task.category.isNotBlank()) {
               Surface(
                 shape = RoundedCornerShape(6.dp),
@@ -871,27 +1413,48 @@ private fun ImmediateClinicalActionCard(
 
       Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        TextButton(
-          onClick = onEdit,
-          modifier = Modifier
-            .heightIn(min = 48.dp)
-            .testTag("protocol_edit_immediate_${task.id}")
-        ) {
-          Icon(Icons.Default.Edit, contentDescription = null, tint = theme.accent, modifier = Modifier.size(15.dp))
-          Spacer(modifier = Modifier.width(4.dp))
-          Text(if (isFr) "Modifier" else "Edit", style = MaterialTheme.typography.labelMedium, color = theme.accent, fontWeight = FontWeight.SemiBold)
-        }
+        Text(
+          text = "${if (isFr) "Par" else "By"} ${task.addedBy}",
+          style = MaterialTheme.typography.labelSmall,
+          color = theme.mutedText,
+          modifier = Modifier.padding(start = 12.dp)
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          if (!isPastItem) {
+            IconButton(
+              onClick = onToggleAlarm,
+              modifier = Modifier.size(48.dp)
+            ) {
+              Icon(
+                imageVector = if (task.hasAlarm) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                contentDescription = if (isFr) "Alarme" else "Alarm",
+                tint = if (task.hasAlarm) theme.accent else theme.mutedText,
+                modifier = Modifier.size(18.dp)
+              )
+            }
+          }
+          TextButton(
+            onClick = onEdit,
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("protocol_edit_immediate_${task.id}")
+          ) {
+            Icon(Icons.Default.Edit, contentDescription = null, tint = theme.accent, modifier = Modifier.size(15.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(if (isFr) "Modifier" else "Edit", style = MaterialTheme.typography.labelMedium, color = theme.accent, fontWeight = FontWeight.SemiBold)
+          }
 
-        IconButton(
-          onClick = onDelete,
-          modifier = Modifier
-            .size(48.dp)
-            .testTag("protocol_delete_immediate_${task.id}")
-        ) {
-          Icon(Icons.Default.DeleteOutline, contentDescription = if (isFr) "Supprimer" else "Delete", tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
+          IconButton(
+            onClick = onDelete,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("protocol_delete_immediate_${task.id}")
+          ) {
+            Icon(Icons.Default.DeleteOutline, contentDescription = if (isFr) "Supprimer" else "Delete", tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
+          }
         }
       }
     }
@@ -901,34 +1464,50 @@ private fun ImmediateClinicalActionCard(
 @Composable
 private fun ProtocolTimelineStepCard(
   step: SyncedProtocolStep,
+  isNextActive: Boolean = false,
+  isPastItem: Boolean = false,
   theme: ThemeColors,
   language: AppLanguage,
   countdownText: String?,
   onToggle: () -> Unit,
+  onToggleAlarm: () -> Unit,
   onEdit: () -> Unit,
   onCopy: () -> Unit,
   onDelete: () -> Unit
 ) {
   val isFr = language == AppLanguage.FR
-  val isTodayOrActive = !step.isCompleted && (
-    step.status.equals("Aujourd'hui", ignoreCase = true) ||
-      step.dateStr.contains("Aujourd'hui", ignoreCase = true) ||
-      step.status.equals("En cours", ignoreCase = true)
-    )
-  val isPriorityUpcoming = !step.isCompleted && !isTodayOrActive &&
-    (step.status.equals("Prioritaire", ignoreCase = true) || step.isCriticalWindow)
 
-  val cardBg = when {
-    isTodayOrActive -> theme.accent.copy(alpha = 0.11f)
-    isPriorityUpcoming -> Color(0xFFFFFBEB)
-    step.isCompleted -> theme.background.copy(alpha = 0.72f)
-    else -> theme.background
+  val cardBg: Color
+  val cardBorder: Color
+  val statusBg: Color
+  val statusFg: Color
+  val statusLabel: String
+
+  when {
+    step.isCompleted -> {
+      cardBg = Color(0xFFF0FDF4)
+      cardBorder = Color(0xFFBBF7D0)
+      statusBg = Color(0xFFDCFCE7)
+      statusFg = Color(0xFF15803D)
+      statusLabel = if (isFr) "Terminé" else "Completed"
+    }
+    isNextActive || step.status.equals("Aujourd'hui", ignoreCase = true) || step.status.equals("En cours", ignoreCase = true) -> {
+      cardBg = Color(0xFFFFFBEB)
+      cardBorder = Color(0xFFFDE68A)
+      statusBg = Color(0xFFFEF3C7)
+      statusFg = Color(0xFFB45309)
+      statusLabel = if (isFr) "Prochain" else "Next"
+    }
+    else -> {
+      cardBg = Color(0xFFF0F9FF)
+      cardBorder = Color(0xFFBAE6FD)
+      statusBg = Color(0xFFE0F2FE)
+      statusFg = Color(0xFF0369A1)
+      statusLabel = if (isFr) "Planifié" else "Scheduled"
+    }
   }
-  val cardBorder = when {
-    isTodayOrActive -> theme.accent
-    isPriorityUpcoming -> Color(0xFFD97706)
-    else -> theme.border
-  }
+
+  val isActiveOrNext = isNextActive || step.status.equals("Aujourd'hui", ignoreCase = true) || step.status.equals("En cours", ignoreCase = true)
 
   Surface(
     modifier = Modifier
@@ -936,7 +1515,7 @@ private fun ProtocolTimelineStepCard(
       .testTag("protocol_step_card_${step.id}"),
     shape = RoundedCornerShape(14.dp),
     color = cardBg,
-    border = BorderStroke(if (isTodayOrActive) 2.dp else if (isPriorityUpcoming) 1.3.dp else 0.9.dp, cardBorder)
+    border = BorderStroke(if (isActiveOrNext) 1.5.dp else 1.dp, cardBorder)
   ) {
     Column(
       modifier = Modifier.padding(12.dp),
@@ -973,33 +1552,23 @@ private fun ProtocolTimelineStepCard(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
+            val isActiveOrNext = isNextActive || step.status.equals("Aujourd'hui", ignoreCase = true) || step.status.equals("En cours", ignoreCase = true)
             // Date pill
             Surface(
               shape = RoundedCornerShape(6.dp),
-              color = if (isTodayOrActive) theme.accent else theme.cardSurface,
-              border = if (isTodayOrActive) null else BorderStroke(0.6.dp, theme.border)
+              color = if (isActiveOrNext) theme.accent else theme.cardSurface,
+              border = if (isActiveOrNext) null else BorderStroke(0.6.dp, theme.border)
             ) {
               Text(
                 text = step.dateStr,
                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = if (isTodayOrActive) Color.White else theme.primaryText
+                color = if (isActiveOrNext) Color.White else theme.primaryText
               )
             }
 
             // Status pill
-            val (statusBg, statusFg, statusLabel) = when {
-              step.isCompleted -> Triple(Color(0xFFF0FDF4), Color(0xFF15803D), if (isFr) "Complété" else "Completed")
-              step.status.equals("Aujourd'hui", ignoreCase = true) || step.dateStr.contains("Aujourd'hui", ignoreCase = true) ->
-                Triple(theme.accent.copy(alpha = 0.16f), theme.accent, "AUJOURD'HUI • EN COURS")
-              step.status.equals("En cours", ignoreCase = true) ->
-                Triple(theme.accent.copy(alpha = 0.14f), theme.accent, if (isFr) "En cours" else "In Progress")
-              isPriorityUpcoming ->
-                Triple(Color(0xFFFEF3C7), Color(0xFFB45309), if (isFr) "Prioritaire" else "Priority")
-              else ->
-                Triple(theme.cardSurface, theme.mutedText, step.status.ifBlank { if (isFr) "Planifié" else "Scheduled" })
-            }
             Surface(
               shape = RoundedCornerShape(6.dp),
               color = statusBg
@@ -1041,7 +1610,7 @@ private fun ProtocolTimelineStepCard(
         Text(
           text = step.details,
           style = MaterialTheme.typography.bodySmall,
-          color = if (isTodayOrActive) theme.primaryText else theme.mutedText,
+          color = if (isActiveOrNext) theme.primaryText else theme.mutedText,
           lineHeight = 18.sp,
           modifier = Modifier.padding(start = 10.dp)
         )
@@ -1071,42 +1640,65 @@ private fun ProtocolTimelineStepCard(
         }
       }
 
-      // Bottom Actions: Copy, Modifier, Supprimer
+      // Bottom Actions: AddedBy, Alarm Bell, Copy, Modifier, Supprimer
       Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        IconButton(
-          onClick = onCopy,
-          modifier = Modifier.size(48.dp)
-        ) {
-          Icon(Icons.Default.ContentCopy, contentDescription = if (isFr) "Copier" else "Copy", tint = theme.mutedText, modifier = Modifier.size(16.dp))
-        }
+        Text(
+          text = "${if (isFr) "Par" else "By"} ${step.addedBy}",
+          style = MaterialTheme.typography.labelSmall,
+          color = theme.mutedText,
+          modifier = Modifier.padding(start = 10.dp)
+        )
 
-        TextButton(
-          onClick = onEdit,
-          modifier = Modifier
-            .heightIn(min = 48.dp)
-            .testTag("protocol_edit_step_${step.id}")
-        ) {
-          Icon(Icons.Default.Edit, contentDescription = null, tint = theme.accent, modifier = Modifier.size(15.dp))
-          Spacer(modifier = Modifier.width(4.dp))
-          Text(
-            text = if (isFr) "Modifier" else "Edit",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = theme.accent
-          )
-        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          if (!isPastItem) {
+            IconButton(
+              onClick = onToggleAlarm,
+              modifier = Modifier.size(48.dp)
+            ) {
+              Icon(
+                imageVector = if (step.hasAlarm) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                contentDescription = if (isFr) "Alarme" else "Alarm",
+                tint = if (step.hasAlarm) theme.accent else theme.mutedText,
+                modifier = Modifier.size(17.dp)
+              )
+            }
+          }
 
-        IconButton(
-          onClick = onDelete,
-          modifier = Modifier
-            .size(48.dp)
-            .testTag("protocol_delete_step_${step.id}")
-        ) {
-          Icon(Icons.Default.DeleteOutline, contentDescription = if (isFr) "Supprimer" else "Delete", tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
+          IconButton(
+            onClick = onCopy,
+            modifier = Modifier.size(48.dp)
+          ) {
+            Icon(Icons.Default.ContentCopy, contentDescription = if (isFr) "Copier" else "Copy", tint = theme.mutedText, modifier = Modifier.size(16.dp))
+          }
+
+          TextButton(
+            onClick = onEdit,
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("protocol_edit_step_${step.id}")
+          ) {
+            Icon(Icons.Default.Edit, contentDescription = null, tint = theme.accent, modifier = Modifier.size(15.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+              text = if (isFr) "Modifier" else "Edit",
+              style = MaterialTheme.typography.labelMedium,
+              fontWeight = FontWeight.SemiBold,
+              color = theme.accent
+            )
+          }
+
+          IconButton(
+            onClick = onDelete,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("protocol_delete_step_${step.id}")
+          ) {
+            Icon(Icons.Default.DeleteOutline, contentDescription = if (isFr) "Supprimer" else "Delete", tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
+          }
         }
       }
     }
@@ -1140,7 +1732,7 @@ private fun NovemberCalendarGrid(
     val totalLeadingDays = 6
     val daysInNov = 30
     val totalCells = ((totalLeadingDays + daysInNov + 6) / 7) * 7
-    val highlightDays = setOf(5, 6, 13, 17, 18, 20, 27)
+    val highlightDays = setOf(5, 9, 12, 13, 17, 18, 19, 20, 27)
 
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
       for (weekRow in 0 until (totalCells / 7)) {
@@ -1149,7 +1741,7 @@ private fun NovemberCalendarGrid(
             val dayNum = weekRow * 7 + col - totalLeadingDays + 1
             if (dayNum in 1..daysInNov) {
               val isSel = selectedDayNumber == dayNum
-              val isToday = dayNum == 13
+              val isToday = dayNum == 18
               val hasEvent = dayNum in highlightDays
               Surface(
                 shape = RoundedCornerShape(6.dp),

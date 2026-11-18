@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.CloudSyncSummary
 import com.example.data.FirestoreRepository
 import com.example.data.SyncedAppointmentItem
+import com.example.data.SyncedBackupSnapshot
 import com.example.data.SyncedCareProvider
 import com.example.data.SyncedChecklistItem
 import com.example.data.SyncedExpenseRecord
@@ -22,6 +23,8 @@ import com.example.data.SyncedUserProfile
 import com.example.data.SyncedVoiceMemo
 import com.example.data.SyncedWalletCard
 import com.example.data.TaskItem
+import com.example.data.ExportCenterUtils
+import com.example.data.HealthHubDefaults
 import com.example.data.WalletSyncSnapshot
 import com.example.data.WalletSyncStatus
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -36,6 +39,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class PmaSyncViewModel(
@@ -115,13 +119,26 @@ class PmaSyncViewModel(
       initialValue = emptyList()
     )
 
-  val careProviders: StateFlow<List<SyncedCareProvider>> = repository.observeCareProviders(currentUserId)
-    .trackSync("care_providers")
-    .stateIn(
-      scope = viewModelScope,
-      started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-      initialValue = emptyList()
-    )
+  private val _localCareProviders = MutableStateFlow<List<SyncedCareProvider>>(
+    HealthHubDefaults.initialCareProviders
+  )
+
+  val careProviders: StateFlow<List<SyncedCareProvider>> = combine(
+    repository.observeCareProviders(currentUserId).trackSync("care_providers"),
+    _localCareProviders
+  ) { remoteList, localList ->
+    if (remoteList.isNotEmpty()) {
+      val remoteIds = remoteList.map { it.id }.toSet()
+      val unsyncedLocal = localList.filter { it.id !in remoteIds }
+      remoteList + unsyncedLocal
+    } else {
+      localList
+    }
+  }.stateIn(
+    scope = viewModelScope,
+    started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+    initialValue = HealthHubDefaults.initialCareProviders
+  )
 
   val voiceMemos: StateFlow<List<SyncedVoiceMemo>> = repository.observeVoiceMemos(currentUserId)
     .trackSync("voice_memos")
@@ -205,6 +222,14 @@ class PmaSyncViewModel(
 
   val expenses: StateFlow<List<SyncedExpenseRecord>> = repository.observeExpenses(currentUserId)
     .trackSync("expenses")
+    .stateIn(
+      scope = viewModelScope,
+      started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+      initialValue = emptyList()
+    )
+
+  val backups: StateFlow<List<SyncedBackupSnapshot>> = repository.observeBackups(currentUserId)
+    .trackSync("backups")
     .stateIn(
       scope = viewModelScope,
       started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
@@ -439,6 +464,26 @@ class PmaSyncViewModel(
     repository.updatePreferences(momAvatar, partnerAvatar, babyAvatar, languageCode, themePaletteName)
   }
 
+  fun updatePartnerProfile(activePartner: String) = runWrite("updatePartnerProfile") {
+    repository.updatePartnerProfile(activePartner)
+  }
+
+  fun updateCoupleAvatar(avatarBase64: String) = runWrite("updateCoupleAvatar") {
+    repository.updateCoupleAvatar(avatarBase64)
+  }
+
+  fun updateWalletPin(newPin: String) = runWrite("updateWalletPin") {
+    repository.updateWalletPin(newPin)
+  }
+
+  fun updateStageViewMode(mode: String, betaHcgConfirmed: Boolean? = null) = runWrite("updateStageViewMode") {
+    repository.updateStageViewMode(mode, betaHcgConfirmed)
+  }
+
+  fun updateAutoBackupEnabled(enabled: Boolean) = runWrite("updateAutoBackupEnabled") {
+    repository.updateAutoBackupEnabled(enabled)
+  }
+
   // Notes
   fun saveNote(note: SyncedNoteItem) = runWrite("saveNote") { repository.saveNote(note) }
   fun deleteNote(noteId: String) = runWrite("deleteNote") { repository.deleteNote(noteId) }
@@ -459,6 +504,9 @@ class PmaSyncViewModel(
   fun toggleChecklistItem(itemId: String, currentChecked: Boolean) = runWrite("toggleChecklistItem") {
     repository.toggleChecklistItem(itemId, currentChecked)
   }
+  fun deleteChecklistItem(itemId: String) = runWrite("deleteChecklistItem") {
+    repository.deleteChecklistItem(itemId)
+  }
 
   // Protocol Steps
   fun saveProtocolStep(step: SyncedProtocolStep) = runWrite("saveProtocolStep") { repository.saveProtocolStep(step) }
@@ -467,11 +515,27 @@ class PmaSyncViewModel(
   fun resetProtocolToDefault() = runWrite("resetProtocolToDefault") { repository.resetProtocolToDefault(currentUserId) }
 
   // Care Providers
-  fun saveCareProvider(provider: SyncedCareProvider) = runWrite("saveCareProvider") {
-    repository.saveCareProvider(provider)
+  fun saveCareProvider(provider: SyncedCareProvider) {
+    _localCareProviders.update { current ->
+      val idx = current.indexOfFirst { it.id == provider.id }
+      if (idx >= 0) {
+        current.toMutableList().apply { set(idx, provider) }
+      } else {
+        listOf(provider) + current
+      }
+    }
+    runWrite("saveCareProvider") {
+      repository.saveCareProvider(provider)
+    }
   }
-  fun deleteCareProvider(providerId: String) = runWrite("deleteCareProvider") {
-    repository.deleteCareProvider(providerId)
+
+  fun deleteCareProvider(providerId: String) {
+    _localCareProviders.update { current ->
+      current.filterNot { it.id == providerId }
+    }
+    runWrite("deleteCareProvider") {
+      repository.deleteCareProvider(providerId)
+    }
   }
 
   // Voice Memos
@@ -483,10 +547,16 @@ class PmaSyncViewModel(
   fun deleteWalletCard(cardId: String) = runWrite("deleteWalletCard") { repository.deleteWalletCard(cardId) }
   fun seedSampleWalletCards() = runWrite("seedSampleWalletCards") { repository.seedSampleWalletCards(currentUserId) }
 
-  // Medication Reminders
+  // Medication Reminders & Daily Adherence
   fun saveMedReminder(reminder: SyncedMedReminder) = runWrite("saveMedReminder") { repository.saveMedReminder(reminder) }
   fun toggleMedReminder(reminderId: String, currentEnabled: Boolean) = runWrite("toggleMedReminder") {
     repository.toggleMedReminder(reminderId, currentEnabled)
+  }
+  fun toggleMedDose(reminder: SyncedMedReminder, period: String, todayKey: String) = runWrite("toggleMedDose") {
+    repository.toggleMedDose(reminder, period, todayKey)
+  }
+  fun refillMedPills(reminderId: String, newCount: Long) = runWrite("refillMedPills") {
+    repository.refillMedPills(reminderId, newCount)
   }
   fun deleteMedReminder(reminderId: String) = runWrite("deleteMedReminder") { repository.deleteMedReminder(reminderId) }
 
@@ -513,6 +583,33 @@ class PmaSyncViewModel(
   // Pregnancy Health Hub: Multi-Currency Expenses
   fun saveExpense(expense: SyncedExpenseRecord) = runWrite("saveExpense") { repository.saveExpense(expense) }
   fun deleteExpense(expenseId: String) = runWrite("deleteExpense") { repository.deleteExpense(expenseId) }
+
+  // Cloud Backup & Point-in-Time Restore
+  fun createCloudBackup(triggerType: String = "MANUAL") = runWrite("createCloudBackup") {
+    val json = ExportCenterUtils.buildBackupJson(
+      profile = profile.value,
+      tasks = tasks.value,
+      notes = notes.value,
+      appointments = appointments.value,
+      protocolSteps = protocolSteps.value,
+      careProviders = careProviders.value,
+      expenses = expenses.value,
+      medReminders = medReminders.value,
+      pregnancyMeds = pregnancyMeds.value,
+      checklists = checklists.value
+    )
+    val totalCount = syncSummary.value.totalSyncedRecords.toLong()
+    repository.createBackupSnapshot(
+      triggerType = triggerType,
+      addedBy = profile.value.activePartnerProfile,
+      recordCount = totalCount,
+      payloadJson = json
+    )
+  }
+
+  fun restoreBackupFromJson(payloadJson: String) = runWrite("restoreBackupFromJson") {
+    repository.restoreBackupFromJson(payloadJson)
+  }
 
   private companion object {
     const val TAG = "PmaSyncVM"

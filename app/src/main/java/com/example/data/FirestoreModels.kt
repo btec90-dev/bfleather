@@ -86,6 +86,13 @@ data class SyncedUserProfile(
   val babyAvatar: String = "👶",
   val languageCode: String = "FR",
   val themePaletteName: String = "CARAMEL",
+  val activePartnerProfile: String = "Fatou",
+  val coupleAvatarBase64: String = "",
+  val walletPin: String = "8888",
+  val isBetaHcgConfirmed: Boolean = false,
+  val stageViewMode: String = "IVF",
+  val autoCloudBackupEnabled: Boolean = true,
+  val lastAutoBackupEpochMillis: Long = 0L,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -112,6 +119,13 @@ data class SyncedUserProfile(
     "babyAvatar" to babyAvatar.take(20),
     "languageCode" to if (languageCode == "EN") "EN" else "FR",
     "themePaletteName" to themePaletteName.take(50),
+    "activePartnerProfile" to if (activePartnerProfile == "Partner") "Partner" else "Fatou",
+    "coupleAvatarBase64" to coupleAvatarBase64.take(250000),
+    "walletPin" to walletPin.filter { it.isDigit() }.take(4).padStart(4, '8'),
+    "isBetaHcgConfirmed" to isBetaHcgConfirmed,
+    "stageViewMode" to if (stageViewMode == "PREGNANCY") "PREGNANCY" else "IVF",
+    "autoCloudBackupEnabled" to autoCloudBackupEnabled,
+    "lastAutoBackupEpochMillis" to lastAutoBackupEpochMillis,
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -128,6 +142,7 @@ data class SyncedTaskItem(
   val isCompleted: Boolean = false,
   val hasAlarm: Boolean = false,
   val alarmTimeMinutesBefore: Long = 15L,
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -139,7 +154,8 @@ data class SyncedTaskItem(
     details = details,
     isCompleted = isCompleted,
     hasAlarm = hasAlarm,
-    alarmTimeMinutesBefore = alarmTimeMinutesBefore.toInt()
+    alarmTimeMinutesBefore = alarmTimeMinutesBefore.toInt(),
+    addedBy = addedBy
   )
 }
 
@@ -153,6 +169,7 @@ data class SyncedNoteItem(
   val timestampText: String = "",
   val mood: String = "",
   val symptoms: List<String> = emptyList(),
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -172,6 +189,9 @@ data class SyncedAppointmentItem(
   val monthIndex: Long = 10L,
   val yearNum: Long = 2026L,
   val isCompleted: Boolean = false,
+  val hasAlarm: Boolean = false,
+  val alarmOffsetMinutes: Long = 15L,
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -185,6 +205,7 @@ data class SyncedMedicalDocItem(
   val dateStr: String = "",
   val summary: String = "",
   val source: String = "hub",
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -197,6 +218,7 @@ data class SyncedChecklistItem(
   val label: String = "",
   val isChecked: Boolean = false,
   val sortOrder: Long = 0L,
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -216,6 +238,9 @@ data class SyncedProtocolStep(
   val isCriticalWindow: Boolean = false,
   val targetEpochMillis: Long = 0L,
   val sortOrder: Long = 0L,
+  val hasAlarm: Boolean = false,
+  val alarmOffsetMinutes: Long = 15L,
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -231,6 +256,11 @@ data class SyncedCareProvider(
   val emergencyContact: String = "",
   val address: String = "",
   val portalLink: String = "",
+  val email: String = "",
+  val photoUri: String = "",
+  val notes: String = "",
+  val isEmergency: Boolean = false,
+  val category: String = "MEDICAL",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -242,6 +272,8 @@ data class SyncedVoiceMemo(
   val title: String = "",
   val durationSec: Long = 0L,
   val timestampText: String = "",
+  val audioBase64: String = "",
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -289,6 +321,11 @@ data class SyncedMedReminder(
   val isEnabled: Boolean = true,
   val protocolPhase: String = "Phase 2 TEC",
   val notes: String = "",
+  val pillsRemaining: Long = 60L,
+  val dailyAmTaken: Boolean = false,
+  val dailyPmTaken: Boolean = false,
+  val lastDoseDateStr: String = "",
+  val soundEnabled: Boolean = true,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -318,6 +355,7 @@ data class SyncedPregnancyMed(
   val trimester2: String = "Sûr",
   val trimester3: String = "Sûr",
   val clinicalNotes: String = "",
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -331,6 +369,7 @@ data class SyncedNutritionFood(
   val safetyStatus: String = "EAT",
   val highlights: String = "",
   val nutrients: String = "",
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -343,6 +382,7 @@ data class SyncedGroceryItem(
   val category: String = "Fruits & Légumes",
   val quantity: String = "1",
   val isChecked: Boolean = false,
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -359,6 +399,7 @@ data class SyncedHealthIssue(
   val doctorNotes: String = "",
   val prescribedTreatment: String = "",
   val isResolved: Boolean = false,
+  val addedBy: String = "Fatou",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -370,12 +411,30 @@ data class SyncedExpenseRecord(
   val title: String = "",
   val amount: Double = 0.0,
   val currency: String = "USD",
-  val category: String = "Médical & Clinique",
-  val phase: String = "Protocole PMA",
+  val category: String = "Others",
+  val phase: String = "IVF / Clinic",
+  val paymentStatus: String = "Out-of-Pocket",
   val dateStr: String = "",
   val notes: String = "",
+  val receiptBase64: String = "",
+  val attachmentTitle: String = "",
+  val addedBy: String = "Fatou",
+  val insurancePaid: Double = 0.0,
+  val totalBill: Double = 0.0,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
+data class SyncedBackupSnapshot(
+  @DocumentId val id: String = "",
+  val userId: String = "",
+  val timestampEpochMillis: Long = 0L,
+  val triggerType: String = "MANUAL",
+  val addedBy: String = "Fatou",
+  val recordCount: Long = 0L,
+  val payloadJson: String = "",
+  @ServerTimestamp val createdAt: Timestamp? = null
 )
 
 data class CloudSyncSummary(

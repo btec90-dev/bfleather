@@ -9,6 +9,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -60,6 +62,22 @@ class AlarmReceiver : BroadcastReceiver() {
       return
     }
 
+    if (intent.action == ACTION_SNOOZE) {
+      val title = intent.getStringExtra(EXTRA_TITLE) ?: "Rappel PMA"
+      val message = intent.getStringExtra(EXTRA_MESSAGE) ?: "Rappel reporté de 10 minutes."
+      val snoozeAt = System.currentTimeMillis() + 10L * 60L * 1000L
+      AlarmScheduler.scheduleReminder(
+        context = context,
+        id = notificationId + 5000,
+        title = title,
+        message = message,
+        triggerAtMillis = snoozeAt
+      )
+      val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      notificationManager.cancel(notificationId)
+      return
+    }
+
     val title = intent.getStringExtra(EXTRA_TITLE) ?: "Rappel Médicament PMA"
     val message = intent.getStringExtra(EXTRA_MESSAGE) ?: "Il est l'heure de prendre votre traitement."
     val repeatDaily = intent.getBooleanExtra(EXTRA_REPEAT_DAILY, false)
@@ -103,6 +121,7 @@ class AlarmReceiver : BroadcastReceiver() {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
+    val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
     val builder = NotificationCompat.Builder(context, AlarmScheduler.CHANNEL_ID)
       .setSmallIcon(R.drawable.ic_launcher_fg_google)
       .setContentTitle(title)
@@ -110,8 +129,24 @@ class AlarmReceiver : BroadcastReceiver() {
       .setStyle(NotificationCompat.BigTextStyle().bigText(message))
       .setPriority(NotificationCompat.PRIORITY_HIGH)
       .setCategory(NotificationCompat.CATEGORY_REMINDER)
+      .setSound(soundUri)
+      .setVibrate(longArrayOf(0L, 250L, 180L, 250L))
       .setAutoCancel(true)
       .setContentIntent(pendingIntent)
+
+    val snoozeIntent = Intent(context, AlarmReceiver::class.java).apply {
+      action = ACTION_SNOOZE
+      putExtra(EXTRA_ID, notificationId)
+      putExtra(EXTRA_TITLE, title)
+      putExtra(EXTRA_MESSAGE, message)
+    }
+    val snoozePending = PendingIntent.getBroadcast(
+      context,
+      notificationId + 200000,
+      snoozeIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+    builder.addAction(0, "Snooze 10m", snoozePending)
 
     if (reminderId.isNotBlank()) {
       val markTakenIntent = Intent(context, AlarmReceiver::class.java).apply {
@@ -125,7 +160,7 @@ class AlarmReceiver : BroadcastReceiver() {
         markTakenIntent,
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
       )
-      builder.addAction(0, "Marquer pris", markTakenPending)
+      builder.addAction(0, "Pris / Taken ✓", markTakenPending)
     }
 
     notificationManager.notify(notificationId, builder.build())
@@ -133,6 +168,7 @@ class AlarmReceiver : BroadcastReceiver() {
 
   companion object {
     const val ACTION_MARK_TAKEN = "com.example.alarm.ACTION_MARK_TAKEN"
+    const val ACTION_SNOOZE = "com.example.alarm.ACTION_SNOOZE"
     const val EXTRA_ID = "EXTRA_ID"
     const val EXTRA_REMINDER_ID = "EXTRA_REMINDER_ID"
     const val EXTRA_TITLE = "EXTRA_TITLE"
@@ -152,13 +188,20 @@ object AlarmScheduler {
   fun ensureChannel(context: Context, manager: NotificationManager? = null) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val nm = manager ?: context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+      val audioAttrs = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
       val channel = NotificationChannel(
         CHANNEL_ID,
         "Rappels Médicaments & PMA",
         NotificationManager.IMPORTANCE_HIGH
       ).apply {
-        description = "Notifications quotidiennes pour Estrace, Progestérone, vitamines et protocole PMA"
+        description = "Notifications quotidiennes pour Estrace, Progestérone, vitamines et rendez-vous PMA"
         enableVibration(true)
+        vibrationPattern = longArrayOf(0L, 250L, 180L, 250L)
+        setSound(soundUri, audioAttrs)
       }
       nm.createNotificationChannel(channel)
     }
@@ -255,6 +298,32 @@ object AlarmScheduler {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
     scheduleExactOrFallback(alarmManager, triggerAtMillis, pendingIntent)
+  }
+
+  fun appointmentRequestCode(itemId: String): Int = 80000 + abs(itemId.hashCode() % 40000)
+
+  fun scheduleAppointmentAlarm(
+    context: Context,
+    itemId: String,
+    title: String,
+    details: String,
+    eventEpochMillis: Long,
+    offsetMinutes: Long
+  ) {
+    val reqCode = appointmentRequestCode(itemId)
+    val triggerAt = eventEpochMillis - offsetMinutes.coerceAtLeast(0L) * 60_000L
+    if (triggerAt <= System.currentTimeMillis()) {
+      // If reminder window already started but event is still ahead, fire shortly
+      if (eventEpochMillis > System.currentTimeMillis()) {
+        scheduleReminder(context, reqCode, "📅 $title", details, System.currentTimeMillis() + 5_000L)
+      }
+      return
+    }
+    scheduleReminder(context, reqCode, "📅 $title", details, triggerAt)
+  }
+
+  fun cancelAppointmentAlarm(context: Context, itemId: String) {
+    cancelReminder(context, appointmentRequestCode(itemId))
   }
 
   private fun scheduleExactOrFallback(

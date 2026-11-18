@@ -32,6 +32,7 @@ import java.util.Calendar
 @Composable
 fun ProtocolImmediateTaskDialog(
   existingTask: TaskItem?,
+  activePartnerProfile: String = "Fatou",
   theme: ThemeColors,
   language: AppLanguage,
   onSave: (TaskItem) -> Unit,
@@ -45,6 +46,8 @@ fun ProtocolImmediateTaskDialog(
   var category by remember(existingTask) { mutableStateOf(existingTask?.category ?: "Cabinet East Side") }
   var details by remember(existingTask) { mutableStateOf(existingTask?.details ?: "") }
   var isCompleted by remember(existingTask) { mutableStateOf(existingTask?.isCompleted ?: false) }
+  var hasAlarm by remember(existingTask) { mutableStateOf(existingTask?.hasAlarm ?: false) }
+  var alarmMinutesBefore by remember(existingTask) { mutableIntStateOf(existingTask?.alarmTimeMinutesBefore ?: 15) }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -144,6 +147,40 @@ fun ProtocolImmediateTaskDialog(
             )
           }
         }
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = theme.background,
+          border = BorderStroke(1.dp, theme.border),
+          onClick = { hasAlarm = !hasAlarm }
+        ) {
+          Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = if (isFr) "🔔 Alarme de rappel" else "🔔 Reminder Alarm",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = theme.primaryText
+              )
+              Switch(checked = hasAlarm, onCheckedChange = { hasAlarm = it })
+            }
+            if (hasAlarm) {
+              LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val offsets = listOf(0 to "0m", 15 to "15m", 60 to "1h", 1440 to "1d")
+                items(offsets) { (mins, lbl) ->
+                  FilterChip(
+                    selected = alarmMinutesBefore == mins,
+                    onClick = { alarmMinutesBefore = mins },
+                    label = { Text(lbl, maxLines = 1, softWrap = false) }
+                  )
+                }
+              }
+            }
+          }
+        }
       }
     },
     confirmButton = {
@@ -156,18 +193,31 @@ fun ProtocolImmediateTaskDialog(
               Toast.LENGTH_SHORT
             ).show()
           } else {
-            onSave(
-              TaskItem(
-                id = existingTask?.id?.ifBlank { null } ?: "t_${System.currentTimeMillis()}",
-                title = title.trim(),
-                date = date.trim().ifBlank { "13 nov." },
-                category = category.trim().ifBlank { "RMA East Side" },
-                details = details.trim(),
-                isCompleted = isCompleted,
-                hasAlarm = existingTask?.hasAlarm ?: false,
-                alarmTimeMinutesBefore = existingTask?.alarmTimeMinutesBefore ?: 15
-              )
+            val savedTask = TaskItem(
+              id = existingTask?.id?.ifBlank { null } ?: "t_${System.currentTimeMillis()}",
+              title = title.trim(),
+              date = date.trim().ifBlank { "13 nov." },
+              category = category.trim().ifBlank { "RMA East Side" },
+              details = details.trim(),
+              isCompleted = isCompleted,
+              hasAlarm = hasAlarm,
+              alarmTimeMinutesBefore = alarmMinutesBefore,
+              addedBy = existingTask?.addedBy ?: activePartnerProfile
             )
+            val epoch = com.example.data.DateSortUtils.parseFlexibleEpochMillis(savedTask.date)
+            if (savedTask.hasAlarm && !savedTask.isCompleted && epoch != null) {
+              com.example.alarm.AlarmScheduler.scheduleAppointmentAlarm(
+                context = context,
+                itemId = savedTask.id,
+                title = savedTask.title,
+                details = savedTask.details.ifBlank { savedTask.category },
+                eventEpochMillis = epoch,
+                offsetMinutes = savedTask.alarmTimeMinutesBefore.toLong()
+              )
+            } else {
+              com.example.alarm.AlarmScheduler.cancelAppointmentAlarm(context, savedTask.id)
+            }
+            onSave(savedTask)
           }
         },
         modifier = Modifier.testTag("protocol_immediate_save_button"),
@@ -190,6 +240,7 @@ fun ProtocolStepEditDialog(
   initialPhaseId: Int,
   initialDateStr: String,
   nextSortOrder: Long,
+  activePartnerProfile: String = "Fatou",
   theme: ThemeColors,
   language: AppLanguage,
   onSave: (SyncedProtocolStep) -> Unit,
@@ -212,6 +263,8 @@ fun ProtocolStepEditDialog(
   var details by remember(existingStep) { mutableStateOf(existingStep?.details ?: "") }
   var isCompleted by remember(existingStep) { mutableStateOf(existingStep?.isCompleted ?: false) }
   var isCriticalWindow by remember(existingStep) { mutableStateOf(existingStep?.isCriticalWindow ?: false) }
+  var hasAlarm by remember(existingStep) { mutableStateOf(existingStep?.hasAlarm ?: false) }
+  var alarmOffsetMinutes by remember(existingStep) { mutableLongStateOf(existingStep?.alarmOffsetMinutes ?: 15L) }
 
   val statusOptions = listOf("Aujourd'hui", "En cours", "Planifié", "Prioritaire", "Complété")
 
@@ -287,7 +340,7 @@ fun ProtocolStepEditDialog(
             FilterChip(
               selected = isSel,
               onClick = { phaseId = meta.phaseId },
-              label = { Text("${meta.emoji} Phase ${meta.phaseId}", fontSize = 11.sp) },
+              label = { Text("${meta.emoji} Phase ${meta.phaseId}", fontSize = 11.sp, maxLines = 1, softWrap = false) },
               colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = theme.accent.copy(alpha = 0.16f),
                 selectedLabelColor = theme.accent
@@ -315,7 +368,7 @@ fun ProtocolStepEditDialog(
                   isCriticalWindow = true
                 }
               },
-              label = { Text(st, fontSize = 11.sp) },
+              label = { Text(st, fontSize = 11.sp, maxLines = 1, softWrap = false) },
               colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = when (st) {
                   "Complété" -> Color(0xFFF0FDF4)
@@ -465,6 +518,41 @@ fun ProtocolStepEditDialog(
             }
           )
         }
+
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = theme.background,
+          border = BorderStroke(1.dp, theme.border),
+          onClick = { hasAlarm = !hasAlarm }
+        ) {
+          Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = if (isFr) "🔔 Alarme de rappel" else "🔔 Reminder Alarm",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = theme.primaryText
+              )
+              Switch(checked = hasAlarm, onCheckedChange = { hasAlarm = it })
+            }
+            if (hasAlarm) {
+              LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val offsets = listOf(0L to "0m", 15L to "15m", 60L to "1h", 1440L to "1d")
+                items(offsets) { (mins, lbl) ->
+                  FilterChip(
+                    selected = alarmOffsetMinutes == mins,
+                    onClick = { alarmOffsetMinutes = mins },
+                    label = { Text(lbl, maxLines = 1, softWrap = false) }
+                  )
+                }
+              }
+            }
+          }
+        }
       }
     },
     confirmButton = {
@@ -489,8 +577,24 @@ fun ProtocolStepEditDialog(
               isCompleted = isCompleted,
               isCriticalWindow = isCriticalWindow,
               targetEpochMillis = existingStep?.targetEpochMillis ?: 0L,
-              sortOrder = existingStep?.sortOrder ?: nextSortOrder
+              sortOrder = existingStep?.sortOrder ?: nextSortOrder,
+              hasAlarm = hasAlarm,
+              alarmOffsetMinutes = alarmOffsetMinutes,
+              addedBy = existingStep?.addedBy ?: activePartnerProfile
             )
+            val epoch = com.example.data.DateSortUtils.protocolStepEpochMillis(saved)
+            if (saved.hasAlarm && !saved.isCompleted && epoch != Long.MAX_VALUE) {
+              com.example.alarm.AlarmScheduler.scheduleAppointmentAlarm(
+                context = context,
+                itemId = saved.id,
+                title = saved.stepName,
+                details = saved.details.ifBlank { "${saved.medication} ${saved.dosage}" },
+                eventEpochMillis = epoch,
+                offsetMinutes = saved.alarmOffsetMinutes
+              )
+            } else {
+              com.example.alarm.AlarmScheduler.cancelAppointmentAlarm(context, saved.id)
+            }
             onSave(saved)
           }
         },

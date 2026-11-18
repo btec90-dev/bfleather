@@ -141,7 +141,13 @@ fun DigitalWalletStackSection(
   modifier: Modifier = Modifier,
   isAnchoredBottomDock: Boolean = false,
   isExpanded: Boolean = true,
-  onToggleExpanded: (() -> Unit)? = null
+  onToggleExpanded: (() -> Unit)? = null,
+  walletPin: String = "8888",
+  userEmail: String = "",
+  externalOpenCardId: String? = null,
+  onClearExternalOpenCard: () -> Unit = {},
+  onUpdateWalletPin: (String) -> Unit = {},
+  onLogExpenseFromCard: (SyncedWalletCard) -> Unit = {}
 ) {
   val context = LocalContext.current
 
@@ -150,9 +156,21 @@ fun DigitalWalletStackSection(
   }
 
   var selectedCardId by remember { mutableStateOf<String?>(null) }
+  var pendingPinCard by remember { mutableStateOf<SyncedWalletCard?>(null) }
   var expandedCard by remember { mutableStateOf<SyncedWalletCard?>(null) }
   var showAddEditModal by remember { mutableStateOf(false) }
   var editingCard by remember { mutableStateOf<SyncedWalletCard?>(null) }
+
+  LaunchedEffect(externalOpenCardId, cards) {
+    if (!externalOpenCardId.isNullOrBlank()) {
+      val match = cards.firstOrNull { it.id == externalOpenCardId }
+      if (match != null) {
+        selectedCardId = match.id
+        pendingPinCard = match
+      }
+      onClearExternalOpenCard()
+    }
+  }
 
   // Keep selectedCardId valid as cards stream in
   LaunchedEffect(cards) {
@@ -425,7 +443,7 @@ fun DigitalWalletStackSection(
                 .testTag("wallet_card_${card.id}"),
               onClick = {
                 if (isActive) {
-                  expandedCard = card
+                  pendingPinCard = card
                 } else {
                   selectedCardId = card.id
                 }
@@ -438,9 +456,9 @@ fun DigitalWalletStackSection(
         if (!isCompactPeek) {
           Text(
             text = if (language == AppLanguage.FR) {
-              "Touchez une carte en arrière-plan pour l'amener au premier plan • Touchez la carte active pour retourner (Recto / Verso)"
+              "Touchez une carte en arrière-plan pour l'amener au premier plan • Code PIN requis pour ouvrir les détails"
             } else {
-              "Tap any background card edge to bring it forward • Tap the active card to flip & view scans"
+              "Tap any background card edge to bring it forward • 4-digit PIN protects card details"
             },
             style = MaterialTheme.typography.labelSmall,
             fontSize = 11.sp,
@@ -449,6 +467,24 @@ fun DigitalWalletStackSection(
         }
       }
     }
+  }
+
+  // 4-Digit PIN Lock Gate before viewing Card Details
+  pendingPinCard?.let { lockedCard ->
+    WalletPinLockModal(
+      expectedPin = walletPin.filter { it.isDigit() }.take(4).ifBlank { "8888" },
+      userEmail = userEmail,
+      language = language,
+      theme = theme,
+      onUnlocked = {
+        pendingPinCard = null
+        expandedCard = lockedCard
+      },
+      onResetPin = { newPin ->
+        onUpdateWalletPin(newPin)
+      },
+      onDismiss = { pendingPinCard = null }
+    )
   }
 
   // Flip / Expand Preview Dialog
@@ -471,6 +507,10 @@ fun DigitalWalletStackSection(
           if (language == AppLanguage.FR) "Carte supprimée du portefeuille" else "Card removed from wallet",
           Toast.LENGTH_SHORT
         ).show()
+      },
+      onLogExpense = {
+        expandedCard = null
+        onLogExpenseFromCard(card)
       },
       onDismiss = { expandedCard = null }
     )
@@ -1014,6 +1054,313 @@ private fun WalletStackedCardView(
 }
 
 @Composable
+private fun WalletPinLockModal(
+  expectedPin: String,
+  userEmail: String,
+  language: AppLanguage,
+  theme: ThemeColors,
+  onUnlocked: () -> Unit,
+  onResetPin: (String) -> Unit,
+  onDismiss: () -> Unit
+) {
+  val context = LocalContext.current
+  val isFrench = language == AppLanguage.FR
+  var enteredPin by remember { mutableStateOf("") }
+  var pinError by remember { mutableStateOf<String?>(null) }
+  var showForgotFlow by remember { mutableStateOf(false) }
+
+  var verificationInput by remember { mutableStateOf("") }
+  var newPinInput by remember { mutableStateOf("") }
+  var confirmPinInput by remember { mutableStateOf("") }
+  var dispatchedCode by remember { mutableStateOf<String?>(null) }
+
+  val isRecoveryEmailAllowed = userEmail.trim().equals("bala1fatou@gmail.com", ignoreCase = true)
+
+  fun appendDigit(d: String) {
+    if (enteredPin.length < 4) {
+      val next = enteredPin + d
+      enteredPin = next
+      pinError = null
+      if (next.length == 4) {
+        if (next == expectedPin) {
+          onUnlocked()
+        } else {
+          pinError = if (isFrench) "Code PIN incorrect" else "Incorrect PIN"
+          enteredPin = ""
+        }
+      }
+    }
+  }
+
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(
+      shape = RoundedCornerShape(24.dp),
+      color = theme.cardSurface,
+      border = BorderStroke(1.dp, theme.border),
+      shadowElevation = 8.dp
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Lock, contentDescription = null, tint = theme.accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = if (isFrench) "Code PIN Portefeuille" else "Wallet PIN Lock",
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.Bold,
+              color = theme.primaryText
+            )
+          }
+          IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Default.Close, contentDescription = if (isFrench) "Fermer" else "Close", tint = theme.mutedText)
+          }
+        }
+
+        if (!showForgotFlow) {
+          Text(
+            text = if (isFrench) "Entrez votre code à 4 chiffres" else "Enter your 4-digit PIN to unlock",
+            style = MaterialTheme.typography.bodySmall,
+            color = theme.mutedText
+          )
+
+          Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            repeat(4) { idx ->
+              val filled = idx < enteredPin.length
+              Box(
+                modifier = Modifier
+                  .size(16.dp)
+                  .clip(CircleShape)
+                  .background(if (filled) theme.accent else theme.background)
+                  .border(1.5.dp, if (filled) theme.accent else theme.border, CircleShape)
+              )
+            }
+          }
+
+          if (!pinError.isNullOrBlank()) {
+            Text(
+              text = pinError ?: "",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFFDC2626),
+              fontWeight = FontWeight.SemiBold
+            )
+          }
+
+          val rows = listOf(
+            listOf("1", "2", "3"),
+            listOf("4", "5", "6"),
+            listOf("7", "8", "9"),
+            listOf("", "0", "DEL")
+          )
+          rows.forEach { row ->
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)
+            ) {
+              row.forEach { key ->
+                if (key.isEmpty()) {
+                  Spacer(modifier = Modifier.size(64.dp, 50.dp))
+                } else if (key == "DEL") {
+                  OutlinedButton(
+                    onClick = { if (enteredPin.isNotEmpty()) enteredPin = enteredPin.dropLast(1) },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.size(64.dp, 50.dp),
+                    contentPadding = PaddingValues(0.dp)
+                  ) {
+                    Icon(Icons.Default.Backspace, contentDescription = "Backspace", tint = theme.primaryText, modifier = Modifier.size(18.dp))
+                  }
+                } else {
+                  OutlinedButton(
+                    onClick = { appendDigit(key) },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                      .size(64.dp, 50.dp)
+                      .testTag("wallet_pin_key_$key"),
+                    contentPadding = PaddingValues(0.dp)
+                  ) {
+                    Text(
+                      text = key,
+                      style = MaterialTheme.typography.titleMedium,
+                      fontWeight = FontWeight.Bold,
+                      color = theme.primaryText
+                    )
+                  }
+                }
+              }
+            }
+          }
+
+          TextButton(
+            onClick = { showForgotFlow = true; pinError = null },
+            modifier = Modifier.testTag("wallet_forgot_pin_button")
+          ) {
+            Text(
+              text = if (isFrench) "Code PIN oublié ?" else "Forgot PIN?",
+              style = MaterialTheme.typography.labelMedium,
+              color = theme.accent,
+              fontWeight = FontWeight.SemiBold
+            )
+          }
+        } else {
+          // Email-scoped Reset Flow for bala1fatou@gmail.com
+          if (!isRecoveryEmailAllowed) {
+            Surface(
+              shape = RoundedCornerShape(12.dp),
+              color = Color(0xFFFDECE9)
+            ) {
+              Text(
+                text = if (isFrench) {
+                  "La réinitialisation par e-mail est réservée exclusivement au compte bala1fatou@gmail.com."
+                } else {
+                  "Email PIN reset is restricted exclusively to bala1fatou@gmail.com."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFB54938),
+                modifier = Modifier.padding(12.dp)
+              )
+            }
+            TextButton(onClick = { showForgotFlow = false }) {
+              Text(if (isFrench) "Retour au clavier" else "Back to PIN")
+            }
+          } else {
+            Text(
+              text = if (isFrench) {
+                "Réinitialisation sécurisée pour bala1fatou@gmail.com"
+              } else {
+                "Verified PIN reset for bala1fatou@gmail.com"
+              },
+              style = MaterialTheme.typography.bodySmall,
+              color = theme.primaryText,
+              fontWeight = FontWeight.SemiBold
+            )
+
+            Button(
+              onClick = {
+                val code = (100000..999999).random().toString()
+                dispatchedCode = code
+                context.getSharedPreferences("wallet_pin_reset", android.content.Context.MODE_PRIVATE)
+                  .edit()
+                  .putString("pending_code", code)
+                  .putLong("expires_at", System.currentTimeMillis() + 15L * 60_000L)
+                  .apply()
+                val emailIntent = android.content.Intent(android.content.Intent.ACTION_SENDTO).apply {
+                  data = android.net.Uri.parse("mailto:bala1fatou@gmail.com")
+                  putExtra(android.content.Intent.EXTRA_SUBJECT, "B&F Parcours — Code PIN Reset: $code")
+                  putExtra(android.content.Intent.EXTRA_TEXT, "Verification code: $code (valid 15 min)")
+                }
+                runCatching { context.startActivity(emailIntent) }
+                Toast.makeText(
+                  context,
+                  if (isFrench) "Code envoyé vers bala1fatou@gmail.com" else "Reset code prepared for bala1fatou@gmail.com",
+                  Toast.LENGTH_SHORT
+                ).show()
+              },
+              colors = ButtonDefaults.buttonColors(containerColor = theme.accent),
+              shape = RoundedCornerShape(12.dp),
+              modifier = Modifier.fillMaxWidth().height(48.dp)
+            ) {
+              Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+              Spacer(Modifier.width(6.dp))
+              Text(if (isFrench) "Envoyer code à bala1fatou@gmail.com" else "Send Code to bala1fatou@gmail.com", color = Color.White)
+            }
+
+            if (dispatchedCode != null) {
+              Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = theme.background,
+                border = BorderStroke(1.dp, theme.border)
+              ) {
+                Text(
+                  text = if (isFrench) {
+                    "Code temporaire émis (${dispatchedCode}) — saisissez-le ci-dessous pour valider."
+                  } else {
+                    "Verification code issued (${dispatchedCode}) — enter below to set new PIN."
+                  },
+                  style = MaterialTheme.typography.labelSmall,
+                  color = theme.mutedText,
+                  modifier = Modifier.padding(8.dp)
+                )
+              }
+            }
+
+            OutlinedTextField(
+              value = verificationInput,
+              onValueChange = { if (it.length <= 6) verificationInput = it.filter { ch -> ch.isDigit() } },
+              label = { Text(if (isFrench) "Code 6 chiffres" else "6-Digit Code") },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+              value = newPinInput,
+              onValueChange = { if (it.length <= 4) newPinInput = it.filter { ch -> ch.isDigit() } },
+              label = { Text(if (isFrench) "Nouveau PIN (4 chiffres)" else "New 4-Digit PIN") },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+              value = confirmPinInput,
+              onValueChange = { if (it.length <= 4) confirmPinInput = it.filter { ch -> ch.isDigit() } },
+              label = { Text(if (isFrench) "Confirmer PIN" else "Confirm PIN") },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            if (!pinError.isNullOrBlank()) {
+              Text(text = pinError ?: "", style = MaterialTheme.typography.labelSmall, color = Color(0xFFDC2626))
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              TextButton(
+                onClick = { showForgotFlow = false; pinError = null },
+                modifier = Modifier.weight(1f)
+              ) {
+                Text(if (isFrench) "Annuler" else "Cancel")
+              }
+              Button(
+                onClick = {
+                  val prefs = context.getSharedPreferences("wallet_pin_reset", android.content.Context.MODE_PRIVATE)
+                  val expectedCode = prefs.getString("pending_code", null)
+                  val expiresAt = prefs.getLong("expires_at", 0L)
+                  when {
+                    expectedCode.isNullOrBlank() || System.currentTimeMillis() > expiresAt ->
+                      pinError = if (isFrench) "Envoyez d'abord le code par e-mail" else "Send verification code first"
+                    verificationInput != expectedCode ->
+                      pinError = if (isFrench) "Code de vérification invalide" else "Invalid verification code"
+                    newPinInput.length != 4 || newPinInput != confirmPinInput ->
+                      pinError = if (isFrench) "Les 4 chiffres ne correspondent pas" else "4-digit PINs do not match"
+                    else -> {
+                      onResetPin(newPinInput)
+                      prefs.edit().clear().apply()
+                      onUnlocked()
+                    }
+                  }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = theme.accent),
+                modifier = Modifier.weight(1f).height(48.dp)
+              ) {
+                Text(if (isFrench) "Valider" else "Reset PIN", color = Color.White)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
 private fun WalletCardDetailFlipDialog(
   userId: String,
   card: SyncedWalletCard,
@@ -1021,6 +1368,7 @@ private fun WalletCardDetailFlipDialog(
   theme: ThemeColors,
   onEdit: () -> Unit,
   onDelete: () -> Unit,
+  onLogExpense: () -> Unit,
   onDismiss: () -> Unit
 ) {
   val context = LocalContext.current
@@ -1028,6 +1376,7 @@ private fun WalletCardDetailFlipDialog(
   val preset = WalletGradientPreset.fromKey(card.gradientKey)
 
   var showBackSide by remember { mutableStateOf(false) }
+  var isNumberRevealed by remember { mutableStateOf(false) }
   var frontBitmap by remember(card.id, card.frontImageBase64) { mutableStateOf<Bitmap?>(null) }
   var backBitmap by remember(card.id, card.backImageBase64) { mutableStateOf<Bitmap?>(null) }
 
@@ -1110,47 +1459,47 @@ private fun WalletCardDetailFlipDialog(
           }
         }
 
-        // Front / Back Toggle Tabs
+        // Compact Icon-Only Front / Back Toggle Tabs
         Row(
           modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
+          horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)
         ) {
-          Button(
-            onClick = { showBackSide = false },
-            modifier = Modifier
-              .weight(1f)
-              .heightIn(min = 48.dp)
-              .testTag("wallet_flip_front_button"),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = if (!showBackSide) theme.accent else theme.background
-            ),
+          Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = if (!showBackSide) theme.accent else theme.background,
             border = BorderStroke(1.dp, if (!showBackSide) theme.accent else theme.border)
           ) {
-            Text(
-              text = if (language == AppLanguage.FR) "Recto (Face)" else "Front",
-              color = if (!showBackSide) Color.White else theme.primaryText,
-              fontWeight = FontWeight.SemiBold
-            )
+            IconButton(
+              onClick = { showBackSide = false },
+              modifier = Modifier
+                .size(48.dp)
+                .testTag("wallet_flip_front_button")
+            ) {
+              Icon(
+                imageVector = Icons.Default.CreditCard,
+                contentDescription = if (language == AppLanguage.FR) "Recto" else "Front",
+                tint = if (!showBackSide) Color.White else theme.primaryText
+              )
+            }
           }
 
-          Button(
-            onClick = { showBackSide = true },
-            modifier = Modifier
-              .weight(1f)
-              .heightIn(min = 48.dp)
-              .testTag("wallet_flip_back_button"),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = if (showBackSide) theme.accent else theme.background
-            ),
+          Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = if (showBackSide) theme.accent else theme.background,
             border = BorderStroke(1.dp, if (showBackSide) theme.accent else theme.border)
           ) {
-            Text(
-              text = if (language == AppLanguage.FR) "Verso (Dos)" else "Back",
-              color = if (showBackSide) Color.White else theme.primaryText,
-              fontWeight = FontWeight.SemiBold
-            )
+            IconButton(
+              onClick = { showBackSide = true },
+              modifier = Modifier
+                .size(48.dp)
+                .testTag("wallet_flip_back_button")
+            ) {
+              Icon(
+                imageVector = Icons.Default.FlipToBack,
+                contentDescription = if (language == AppLanguage.FR) "Verso" else "Back",
+                tint = if (showBackSide) Color.White else theme.primaryText
+              )
+            }
           }
         }
 
@@ -1233,7 +1582,11 @@ private fun WalletCardDetailFlipDialog(
 
                 if (!isShowingBackVisual) {
                   Text(
-                    text = card.cardNumber.ifBlank { "•••• •••• ••••" },
+                    text = if (isNumberRevealed) {
+                      card.cardNumber.ifBlank { "•••• •••• ••••" }
+                    } else {
+                      maskCardNumber(card.cardNumber)
+                    },
                     style = MaterialTheme.typography.titleLarge.copy(
                       fontFamily = FontFamily.Monospace,
                       letterSpacing = 1.2.sp
@@ -1274,7 +1627,7 @@ private fun WalletCardDetailFlipDialog(
           }
         }
 
-        // Full Card / Policy Details + Quick Copy
+        // Full Card / Policy Details + Masked Toggle + Quick Copy
         Surface(
           modifier = Modifier.fillMaxWidth(),
           shape = RoundedCornerShape(16.dp),
@@ -1298,7 +1651,7 @@ private fun WalletCardDetailFlipDialog(
                     color = theme.mutedText
                   )
                   Text(
-                    text = card.cardNumber.ifBlank { "—" },
+                    text = if (isNumberRevealed) card.cardNumber.ifBlank { "—" } else maskCardNumber(card.cardNumber),
                     style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
                     fontWeight = FontWeight.Bold,
                     color = theme.primaryText
@@ -1306,32 +1659,38 @@ private fun WalletCardDetailFlipDialog(
                 }
 
                 if (card.cardNumber.isNotBlank()) {
-                  OutlinedButton(
-                    onClick = {
-                      clipboardManager.setText(AnnotatedString(card.cardNumber))
-                      Toast.makeText(
-                        context,
-                        if (language == AppLanguage.FR) "Numéro copié !" else "Number copied!",
-                        Toast.LENGTH_SHORT
-                      ).show()
-                    },
-                    modifier = Modifier
-                      .heightIn(min = 48.dp)
-                      .testTag("wallet_copy_number_button"),
-                    shape = RoundedCornerShape(10.dp)
-                  ) {
-                    Icon(
-                      imageVector = Icons.Default.ContentCopy,
-                      contentDescription = if (language == AppLanguage.FR) "Copier" else "Copy",
-                      tint = theme.accent,
-                      modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                      text = if (language == AppLanguage.FR) "Copier" else "Copy",
-                      color = theme.accent,
-                      fontWeight = FontWeight.SemiBold
-                    )
+                  Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                      onClick = { isNumberRevealed = !isNumberRevealed },
+                      modifier = Modifier
+                        .size(48.dp)
+                        .testTag("wallet_reveal_number_button")
+                    ) {
+                      Icon(
+                        imageVector = if (isNumberRevealed) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = if (isNumberRevealed) "Hide number" else "Reveal number",
+                        tint = theme.primaryText
+                      )
+                    }
+                    IconButton(
+                      onClick = {
+                        clipboardManager.setText(AnnotatedString(card.cardNumber))
+                        Toast.makeText(
+                          context,
+                          if (language == AppLanguage.FR) "Numéro copié !" else "Number copied!",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      },
+                      modifier = Modifier
+                        .size(48.dp)
+                        .testTag("wallet_copy_number_button")
+                    ) {
+                      Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = if (language == AppLanguage.FR) "Copier" else "Copy",
+                        tint = theme.accent
+                      )
+                    }
                   }
                 }
               }
@@ -1392,37 +1751,69 @@ private fun WalletCardDetailFlipDialog(
           }
         }
 
-        // Bottom Actions: Edit & Delete
+        // Compact Bottom Actions: Icon-Only Delete + Icon-Only Edit + Log Expense Pill
         Row(
           modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(10.dp)
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          OutlinedButton(
-            onClick = onDelete,
-            modifier = Modifier
-              .weight(1f)
-              .heightIn(min = 48.dp)
-              .testTag("wallet_delete_card_button"),
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, Color(0xFFFCA5A5))
-          ) {
-            Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(if (language == AppLanguage.FR) "Supprimer" else "Delete", color = Color(0xFFDC2626))
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = Color(0xFFFDECE9),
+              border = BorderStroke(1.dp, Color(0xFFFCA5A5))
+            ) {
+              IconButton(
+                onClick = onDelete,
+                modifier = Modifier
+                  .size(48.dp)
+                  .testTag("wallet_delete_card_button")
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Delete,
+                  contentDescription = if (language == AppLanguage.FR) "Supprimer" else "Delete",
+                  tint = Color(0xFFDC2626)
+                )
+              }
+            }
+
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = theme.background,
+              border = BorderStroke(1.dp, theme.border)
+            ) {
+              IconButton(
+                onClick = onEdit,
+                modifier = Modifier
+                  .size(48.dp)
+                  .testTag("wallet_edit_card_button")
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Edit,
+                  contentDescription = if (language == AppLanguage.FR) "Modifier / Scan" else "Edit / Scan",
+                  tint = theme.primaryText
+                )
+              }
+            }
           }
 
           Button(
-            onClick = onEdit,
+            onClick = onLogExpense,
             modifier = Modifier
-              .weight(1f)
               .heightIn(min = 48.dp)
-              .testTag("wallet_edit_card_button"),
-            shape = RoundedCornerShape(12.dp),
+              .testTag("wallet_log_expense_button"),
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = theme.accent)
           ) {
-            Icon(Icons.Default.Edit, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Receipt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text(if (language == AppLanguage.FR) "Modifier / Scan" else "Edit / Scan", color = Color.White)
+            Text(
+              text = if (language == AppLanguage.FR) "Noter Dépense" else "Log Expense",
+              color = Color.White,
+              maxLines = 1,
+              softWrap = false,
+              fontWeight = FontWeight.SemiBold
+            )
           }
         }
       }

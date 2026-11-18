@@ -93,6 +93,7 @@ class FirestoreRepository(
                 isCompleted = doc.getBoolean("isCompleted") ?: false,
                 hasAlarm = doc.getBoolean("hasAlarm") ?: false,
                 alarmTimeMinutesBefore = doc.getLong("alarmTimeMinutesBefore") ?: 15L,
+                addedBy = doc.getString("addedBy") ?: "Fatou",
                 createdAt = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE),
                 updatedAt = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)
               )
@@ -258,6 +259,11 @@ class FirestoreRepository(
                 isEnabled = doc.getBoolean("isEnabled") ?: true,
                 protocolPhase = doc.getString("protocolPhase") ?: "",
                 notes = doc.getString("notes") ?: "",
+                pillsRemaining = doc.getLong("pillsRemaining") ?: 60L,
+                dailyAmTaken = doc.getBoolean("dailyAmTaken") ?: false,
+                dailyPmTaken = doc.getBoolean("dailyPmTaken") ?: false,
+                lastDoseDateStr = doc.getString("lastDoseDateStr") ?: "",
+                soundEnabled = doc.getBoolean("soundEnabled") ?: true,
                 createdAt = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE),
                 updatedAt = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)
               )
@@ -355,6 +361,19 @@ class FirestoreRepository(
     )
   }
 
+  fun observeBackups(userId: String): Flow<List<SyncedBackupSnapshot>> = flow {
+    val path = "users/$userId/backups"
+    emitAll(
+      userDoc(userId).collection("backups")
+        .snapshots()
+        .map { snapshot ->
+          snapshot.toObjects(SyncedBackupSnapshot::class.java, ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.timestampEpochMillis }
+        }
+        .handleListenerErrors(userId, path)
+    )
+  }
+
   // -----------------------------------------------------------------
   // 2. IDEMPOTENT FIRST-LOGIN SEEDING (Never overwrites existing docs)
   // -----------------------------------------------------------------
@@ -418,13 +437,20 @@ class FirestoreRepository(
           }
           hasBackfill = true
         }
+        if (uDoc.collection("checklists").whereEqualTo("listKey", "partner_todo").limit(1).get().await().isEmpty) {
+          HealthHubDefaults.initialPartnerTodoItems.forEach { item ->
+            backfillBatch.set(uDoc.collection("checklists").document(item.id), checklistToCreateMap(userId, item))
+          }
+          hasBackfill = true
+        }
         if (hasBackfill) {
           backfillBatch.commit().await()
         }
-        // One-time auto-upgrade if account still holds legacy pre-Nov-13 protocol seed (p2_120h without p2_10_today)
-        val newTodaySnap = uDoc.collection("protocol_steps").document("p2_10_today").get().await()
-        val legacySnap = uDoc.collection("protocol_steps").document("p2_120h").get().await()
-        if (!newTodaySnap.exists() && legacySnap.exists()) {
+        // Auto-upgrade if account has pre-Nov-18 protocol seed or missing Nov 18 transfer day step
+        val stepNov18Snap = uDoc.collection("protocol_steps").document("p3_1").get().await()
+        val stepNov17Snap = uDoc.collection("protocol_steps").document("p2_12").get().await()
+        val taskT6Snap = uDoc.collection("tasks").document("t6").get().await()
+        if (!stepNov18Snap.exists() || !stepNov17Snap.exists() || !taskT6Snap.exists()) {
           resetProtocolToDefault(userId)
         }
         return
@@ -462,7 +488,7 @@ class FirestoreRepository(
       }
 
       if (uDoc.collection("checklists").limit(1).get().await().isEmpty) {
-        SeedDefaults.initialChecklistItems.forEach { item ->
+        (SeedDefaults.initialChecklistItems + HealthHubDefaults.initialPartnerTodoItems).forEach { item ->
           val docRef = uDoc.collection("checklists").document(item.id)
           batch.set(docRef, checklistToCreateMap(userId, item))
         }
@@ -726,6 +752,72 @@ class FirestoreRepository(
     executeUpdate(docRef.path) { docRef.update(updates).await() }
   }
 
+  suspend fun updatePartnerProfile(activePartner: String) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("profile").document("main")
+    executeUpdate(docRef.path) {
+      docRef.update(
+        mapOf(
+          "activePartnerProfile" to if (activePartner == "Partner") "Partner" else "Fatou",
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+    }
+  }
+
+  suspend fun updateCoupleAvatar(avatarBase64: String) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("profile").document("main")
+    executeUpdate(docRef.path) {
+      docRef.update(
+        mapOf(
+          "coupleAvatarBase64" to avatarBase64.take(250000),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+    }
+  }
+
+  suspend fun updateWalletPin(newPin: String) {
+    val uid = requireUserId()
+    val cleanPin = newPin.filter { it.isDigit() }.take(4).padStart(4, '8')
+    val docRef = userDoc(uid).collection("profile").document("main")
+    executeUpdate(docRef.path) {
+      docRef.update(
+        mapOf(
+          "walletPin" to cleanPin,
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+    }
+  }
+
+  suspend fun updateStageViewMode(mode: String, betaHcgConfirmed: Boolean? = null) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("profile").document("main")
+    val updates = mutableMapOf<String, Any>(
+      "stageViewMode" to if (mode == "PREGNANCY") "PREGNANCY" else "IVF",
+      "updatedAt" to FieldValue.serverTimestamp()
+    )
+    if (betaHcgConfirmed != null) {
+      updates["isBetaHcgConfirmed"] = betaHcgConfirmed
+    }
+    executeUpdate(docRef.path) { docRef.update(updates).await() }
+  }
+
+  suspend fun updateAutoBackupEnabled(enabled: Boolean) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("profile").document("main")
+    executeUpdate(docRef.path) {
+      docRef.update(
+        mapOf(
+          "autoCloudBackupEnabled" to enabled,
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+    }
+  }
+
   // -----------------------------------------------------------------
   // 4. TASKS CRUD
   // -----------------------------------------------------------------
@@ -745,6 +837,7 @@ class FirestoreRepository(
           "isCompleted" to task.isCompleted,
           "hasAlarm" to task.hasAlarm,
           "alarmTimeMinutesBefore" to task.alarmTimeMinutesBefore.toLong().coerceIn(0L, 10080L),
+          "addedBy" to task.addedBy.take(40),
           "updatedAt" to FieldValue.serverTimestamp()
         )
         docRef.update(updatePayload).await()
@@ -805,6 +898,7 @@ class FirestoreRepository(
             "timestampText" to note.timestampText.take(100),
             "mood" to note.mood.take(100),
             "symptoms" to note.symptoms.take(20),
+            "addedBy" to note.addedBy.take(40),
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
@@ -843,6 +937,9 @@ class FirestoreRepository(
             "monthIndex" to apt.monthIndex.coerceIn(0L, 11L),
             "yearNum" to apt.yearNum.coerceIn(2020L, 2035L),
             "isCompleted" to apt.isCompleted,
+            "hasAlarm" to apt.hasAlarm,
+            "alarmOffsetMinutes" to apt.alarmOffsetMinutes.coerceIn(0L, 10080L),
+            "addedBy" to apt.addedBy.take(40),
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
@@ -888,6 +985,7 @@ class FirestoreRepository(
             "dateStr" to doc.dateStr.take(100),
             "summary" to doc.summary.take(2000),
             "source" to doc.source.take(50),
+            "addedBy" to doc.addedBy.take(40),
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
@@ -919,6 +1017,7 @@ class FirestoreRepository(
             "label" to item.label.take(300),
             "isChecked" to item.isChecked,
             "sortOrder" to item.sortOrder.coerceIn(0L, 1000L),
+            "addedBy" to item.addedBy.take(40),
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
@@ -939,6 +1038,12 @@ class FirestoreRepository(
         )
       ).await()
     }
+  }
+
+  suspend fun deleteChecklistItem(itemId: String) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("checklists").document(itemId)
+    executeDelete(docRef.path) { docRef.delete().await() }
   }
 
   // -----------------------------------------------------------------
@@ -964,6 +1069,9 @@ class FirestoreRepository(
             "isCriticalWindow" to step.isCriticalWindow,
             "targetEpochMillis" to step.targetEpochMillis.coerceAtLeast(0L),
             "sortOrder" to step.sortOrder.coerceIn(0L, 1000L),
+            "hasAlarm" to step.hasAlarm,
+            "alarmOffsetMinutes" to step.alarmOffsetMinutes.coerceIn(0L, 10080L),
+            "addedBy" to step.addedBy.take(40),
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
@@ -1137,12 +1245,68 @@ class FirestoreRepository(
             "isEnabled" to reminder.isEnabled,
             "protocolPhase" to reminder.protocolPhase.take(100),
             "notes" to reminder.notes.take(500),
+            "pillsRemaining" to reminder.pillsRemaining.coerceIn(0L, 999L),
+            "dailyAmTaken" to reminder.dailyAmTaken,
+            "dailyPmTaken" to reminder.dailyPmTaken,
+            "lastDoseDateStr" to reminder.lastDoseDateStr.take(40),
+            "soundEnabled" to reminder.soundEnabled,
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
       } else {
         docRef.set(medReminderToCreateMap(uid, reminder)).await()
       }
+    }
+  }
+
+  suspend fun toggleMedDose(reminder: SyncedMedReminder, period: String, todayKey: String) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("med_reminders").document(reminder.id)
+    val resetToday = reminder.lastDoseDateStr != todayKey
+    val currentAm = if (resetToday) false else reminder.dailyAmTaken
+    val currentPm = if (resetToday) false else reminder.dailyPmTaken
+    val nextAm = if (period == "AM") !currentAm else currentAm
+    val nextPm = if (period == "PM") !currentPm else currentPm
+    val wasTaken = if (period == "AM") currentAm else currentPm
+    val nextPills = if (!wasTaken) (reminder.pillsRemaining - 1L).coerceAtLeast(0L) else (reminder.pillsRemaining + 1L).coerceAtMost(999L)
+    executeUpdate(docRef.path) {
+      val snap = docRef.get().await()
+      if (snap.exists()) {
+        docRef.update(
+          mapOf(
+            "dailyAmTaken" to nextAm,
+            "dailyPmTaken" to nextPm,
+            "lastDoseDateStr" to todayKey,
+            "pillsRemaining" to nextPills,
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
+      } else {
+        docRef.set(
+          medReminderToCreateMap(
+            uid,
+            reminder.copy(
+              dailyAmTaken = nextAm,
+              dailyPmTaken = nextPm,
+              lastDoseDateStr = todayKey,
+              pillsRemaining = nextPills
+            )
+          )
+        ).await()
+      }
+    }
+  }
+
+  suspend fun refillMedPills(reminderId: String, newCount: Long) {
+    val uid = requireUserId()
+    val docRef = userDoc(uid).collection("med_reminders").document(reminderId)
+    executeUpdate(docRef.path) {
+      docRef.update(
+        mapOf(
+          "pillsRemaining" to newCount.coerceIn(0L, 999L),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
     }
   }
 
@@ -1337,8 +1501,12 @@ class FirestoreRepository(
             "currency" to validCurrency,
             "category" to expense.category.take(100),
             "phase" to expense.phase.take(60),
+            "paymentStatus" to expense.paymentStatus.take(60),
             "dateStr" to expense.dateStr.take(80),
             "notes" to expense.notes.take(1000),
+            "receiptBase64" to expense.receiptBase64.take(250000),
+            "attachmentTitle" to expense.attachmentTitle.take(120),
+            "addedBy" to expense.addedBy.take(40),
             "updatedAt" to FieldValue.serverTimestamp()
           )
         ).await()
@@ -1353,6 +1521,180 @@ class FirestoreRepository(
     require(expenseId.isNotBlank()) { "Expense ID must not be blank" }
     val docRef = userDoc(uid).collection("expenses").document(expenseId)
     executeDelete(docRef.path) { docRef.delete().await() }
+  }
+
+  suspend fun createBackupSnapshot(
+    triggerType: String,
+    addedBy: String,
+    recordCount: Long,
+    payloadJson: String
+  ) {
+    val uid = requireUserId()
+    val now = System.currentTimeMillis()
+    val docId = "bkp_$now"
+    val docRef = userDoc(uid).collection("backups").document(docId)
+    executeCreateOrUpdate(docRef.path) {
+      docRef.set(
+        mapOf(
+          "userId" to uid,
+          "timestampEpochMillis" to now,
+          "triggerType" to triggerType.take(20),
+          "addedBy" to addedBy.take(40),
+          "recordCount" to recordCount.coerceAtLeast(0L),
+          "payloadJson" to payloadJson.take(750000),
+          "createdAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+      userDoc(uid).collection("profile").document("main").update(
+        mapOf(
+          "lastAutoBackupEpochMillis" to now,
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+    }
+  }
+
+  suspend fun restoreBackupFromJson(payloadJson: String) {
+    val uid = requireUserId()
+    val uDoc = userDoc(uid)
+    val root = org.json.JSONObject(payloadJson)
+    executeCreateOrUpdate("users/$uid/restore") {
+      root.optJSONObject("profile")?.let { p ->
+        val updates = mutableMapOf<String, Any>(
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+        if (p.has("patientName")) updates["patientName"] = p.optString("patientName", "Fatou")
+        if (p.has("dueDate")) updates["dueDate"] = p.optString("dueDate")
+        if (p.has("gestationalWeeks")) updates["gestationalWeeks"] = p.optLong("gestationalWeeks", 16L)
+        if (p.has("gestationalDaysRemainder")) updates["gestationalDaysRemainder"] = p.optLong("gestationalDaysRemainder", 4L)
+        if (p.has("languageCode")) updates["languageCode"] = p.optString("languageCode", "FR")
+        if (p.has("themePaletteName")) updates["themePaletteName"] = p.optString("themePaletteName", "CARAMEL")
+        if (p.has("activePartnerProfile")) updates["activePartnerProfile"] = p.optString("activePartnerProfile", "Fatou")
+        if (p.has("walletPin")) updates["walletPin"] = p.optString("walletPin", "8888")
+        if (p.has("isBetaHcgConfirmed")) updates["isBetaHcgConfirmed"] = p.optBoolean("isBetaHcgConfirmed", false)
+        if (p.has("stageViewMode")) updates["stageViewMode"] = p.optString("stageViewMode", "IVF")
+        uDoc.collection("profile").document("main").update(updates).await()
+      }
+
+      suspend fun restoreArray(arrName: String, buildWrite: (org.json.JSONObject, com.google.firebase.firestore.WriteBatch) -> Unit) {
+        val arr = root.optJSONArray(arrName) ?: return
+        var batch = db.batch()
+        var ops = 0
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          buildWrite(obj, batch)
+          ops++
+          if (ops >= 400) {
+            batch.commit().await()
+            batch = db.batch()
+            ops = 0
+          }
+        }
+        if (ops > 0) batch.commit().await()
+      }
+
+      restoreArray("expenses") { obj, batch ->
+        val id = sanitizeOrNewId(obj.optString("id"))
+        val rec = SyncedExpenseRecord(
+          id = id,
+          title = obj.optString("title"),
+          amount = obj.optDouble("amount", 0.0),
+          currency = obj.optString("currency", "USD"),
+          category = obj.optString("category", "Others"),
+          phase = obj.optString("phase", "IVF / Clinic"),
+          paymentStatus = obj.optString("paymentStatus", "Out-of-Pocket"),
+          dateStr = obj.optString("dateStr"),
+          notes = obj.optString("notes"),
+          addedBy = obj.optString("addedBy", "Fatou")
+        )
+        batch.set(uDoc.collection("expenses").document(id), expenseToCreateMap(uid, rec))
+      }
+
+      restoreArray("protocolSteps") { obj, batch ->
+        val id = sanitizeOrNewId(obj.optString("id"))
+        val step = SyncedProtocolStep(
+          id = id,
+          phaseId = obj.optLong("phaseId", 2L),
+          dateStr = obj.optString("dateStr"),
+          stepName = obj.optString("stepName"),
+          medication = obj.optString("medication"),
+          dosage = obj.optString("dosage"),
+          status = obj.optString("status"),
+          details = obj.optString("details"),
+          isCompleted = obj.optBoolean("isCompleted", false),
+          isCriticalWindow = obj.optBoolean("isCriticalWindow", false),
+          targetEpochMillis = obj.optLong("targetEpochMillis", 0L),
+          sortOrder = obj.optLong("sortOrder", 0L),
+          addedBy = obj.optString("addedBy", "Fatou")
+        )
+        batch.set(uDoc.collection("protocol_steps").document(id), protocolStepToCreateMap(uid, step))
+      }
+
+      restoreArray("appointments") { obj, batch ->
+        val id = sanitizeOrNewId(obj.optString("id"))
+        val apt = SyncedAppointmentItem(
+          id = id,
+          title = obj.optString("title"),
+          dateStr = obj.optString("dateStr"),
+          timeStr = obj.optString("timeStr"),
+          doctor = obj.optString("doctor"),
+          location = obj.optString("location"),
+          clinicalNotes = obj.optString("clinicalNotes"),
+          eventType = obj.optString("eventType", "Rendez-vous"),
+          dayOfMonth = obj.optLong("dayOfMonth", 13L),
+          monthIndex = obj.optLong("monthIndex", 10L),
+          yearNum = obj.optLong("yearNum", 2026L),
+          isCompleted = obj.optBoolean("isCompleted", false),
+          hasAlarm = obj.optBoolean("hasAlarm", false),
+          alarmOffsetMinutes = obj.optLong("alarmOffsetMinutes", 15L),
+          addedBy = obj.optString("addedBy", "Fatou")
+        )
+        batch.set(uDoc.collection("appointments").document(id), appointmentToCreateMap(uid, apt))
+      }
+
+      restoreArray("tasks") { obj, batch ->
+        val id = sanitizeOrNewId(obj.optString("id"))
+        val task = TaskItem(
+          id = id,
+          title = obj.optString("title"),
+          date = obj.optString("date"),
+          category = obj.optString("category"),
+          details = obj.optString("details"),
+          isCompleted = obj.optBoolean("isCompleted", false),
+          hasAlarm = obj.optBoolean("hasAlarm", false),
+          alarmTimeMinutesBefore = obj.optInt("alarmTimeMinutesBefore", 15),
+          addedBy = obj.optString("addedBy", "Fatou")
+        )
+        batch.set(uDoc.collection("tasks").document(id), taskToCreateMap(uid, task))
+      }
+
+      restoreArray("notes") { obj, batch ->
+        val id = sanitizeOrNewId(obj.optString("id"))
+        val note = SyncedNoteItem(
+          id = id,
+          title = obj.optString("title"),
+          content = obj.optString("content"),
+          category = obj.optString("category", "clinical"),
+          timestampText = obj.optString("timestampText"),
+          mood = obj.optString("mood"),
+          addedBy = obj.optString("addedBy", "Fatou")
+        )
+        batch.set(uDoc.collection("notes").document(id), noteToCreateMap(uid, note))
+      }
+
+      restoreArray("checklists") { obj, batch ->
+        val id = sanitizeOrNewId(obj.optString("id"))
+        val item = SyncedChecklistItem(
+          id = id,
+          listKey = obj.optString("listKey", "mom_bag"),
+          label = obj.optString("label"),
+          isChecked = obj.optBoolean("isChecked", false),
+          sortOrder = obj.optLong("sortOrder", 0L),
+          addedBy = obj.optString("addedBy", "Fatou")
+        )
+        batch.set(uDoc.collection("checklists").document(id), checklistToCreateMap(uid, item))
+      }
+    }
   }
 
   // -----------------------------------------------------------------
@@ -1406,6 +1748,7 @@ class FirestoreRepository(
     "isCompleted" to task.isCompleted,
     "hasAlarm" to task.hasAlarm,
     "alarmTimeMinutesBefore" to task.alarmTimeMinutesBefore.toLong().coerceIn(0L, 10080L),
+    "addedBy" to task.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1418,6 +1761,7 @@ class FirestoreRepository(
     "timestampText" to note.timestampText.take(100),
     "mood" to note.mood.take(100),
     "symptoms" to note.symptoms.take(20),
+    "addedBy" to note.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1435,6 +1779,9 @@ class FirestoreRepository(
     "monthIndex" to apt.monthIndex.coerceIn(0L, 11L),
     "yearNum" to apt.yearNum.coerceIn(2020L, 2035L),
     "isCompleted" to apt.isCompleted,
+    "hasAlarm" to apt.hasAlarm,
+    "alarmOffsetMinutes" to apt.alarmOffsetMinutes.coerceIn(0L, 10080L),
+    "addedBy" to apt.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1446,6 +1793,7 @@ class FirestoreRepository(
     "dateStr" to doc.dateStr.take(100),
     "summary" to doc.summary.take(2000),
     "source" to doc.source.take(50),
+    "addedBy" to doc.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1456,6 +1804,7 @@ class FirestoreRepository(
     "label" to item.label.take(300),
     "isChecked" to item.isChecked,
     "sortOrder" to item.sortOrder.coerceIn(0L, 1000L),
+    "addedBy" to item.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1473,6 +1822,9 @@ class FirestoreRepository(
     "isCriticalWindow" to step.isCriticalWindow,
     "targetEpochMillis" to step.targetEpochMillis.coerceAtLeast(0L),
     "sortOrder" to step.sortOrder.coerceIn(0L, 1000L),
+    "hasAlarm" to step.hasAlarm,
+    "alarmOffsetMinutes" to step.alarmOffsetMinutes.coerceIn(0L, 10080L),
+    "addedBy" to step.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1486,6 +1838,11 @@ class FirestoreRepository(
     "emergencyContact" to provider.emergencyContact.take(50),
     "address" to provider.address.take(250),
     "portalLink" to provider.portalLink.take(300),
+    "email" to provider.email.take(150),
+    "photoUri" to provider.photoUri.take(500),
+    "notes" to provider.notes.take(500),
+    "isEmergency" to provider.isEmergency,
+    "category" to provider.category.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1495,6 +1852,8 @@ class FirestoreRepository(
     "title" to memo.title.take(200),
     "durationSec" to memo.durationSec.coerceIn(0L, 300L),
     "timestampText" to memo.timestampText.take(100),
+    "audioBase64" to memo.audioBase64.take(280000),
+    "addedBy" to memo.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1546,6 +1905,11 @@ class FirestoreRepository(
     "isEnabled" to reminder.isEnabled,
     "protocolPhase" to reminder.protocolPhase.take(100),
     "notes" to reminder.notes.take(500),
+    "pillsRemaining" to reminder.pillsRemaining.coerceIn(0L, 999L),
+    "dailyAmTaken" to reminder.dailyAmTaken,
+    "dailyPmTaken" to reminder.dailyPmTaken,
+    "lastDoseDateStr" to reminder.lastDoseDateStr.take(40),
+    "soundEnabled" to reminder.soundEnabled,
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1560,6 +1924,7 @@ class FirestoreRepository(
     "trimester2" to med.trimester2.take(100),
     "trimester3" to med.trimester3.take(100),
     "clinicalNotes" to med.clinicalNotes.take(2000),
+    "addedBy" to med.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1571,6 +1936,7 @@ class FirestoreRepository(
     "safetyStatus" to normalizeFoodSafetyStatus(food.safetyStatus),
     "highlights" to food.highlights.take(1000),
     "nutrients" to food.nutrients.take(300),
+    "addedBy" to food.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1581,6 +1947,7 @@ class FirestoreRepository(
     "category" to item.category.take(100),
     "quantity" to item.quantity.take(80),
     "isChecked" to item.isChecked,
+    "addedBy" to item.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1595,6 +1962,7 @@ class FirestoreRepository(
     "doctorNotes" to issue.doctorNotes.take(2000),
     "prescribedTreatment" to issue.prescribedTreatment.take(1000),
     "isResolved" to issue.isResolved,
+    "addedBy" to issue.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1603,11 +1971,17 @@ class FirestoreRepository(
     "userId" to uid,
     "title" to expense.title.ifBlank { "Dépense" }.take(200),
     "amount" to expense.amount.coerceIn(0.0, 1_000_000_000.0),
+    "insurancePaid" to expense.insurancePaid.coerceIn(0.0, 1_000_000_000.0),
+    "totalBill" to expense.totalBill.coerceIn(0.0, 1_000_000_000.0),
     "currency" to normalizeCurrency(expense.currency),
     "category" to expense.category.take(100),
     "phase" to expense.phase.take(60),
+    "paymentStatus" to expense.paymentStatus.take(60),
     "dateStr" to expense.dateStr.take(80),
     "notes" to expense.notes.take(1000),
+    "receiptBase64" to expense.receiptBase64.take(250000),
+    "attachmentTitle" to expense.attachmentTitle.take(120),
+    "addedBy" to expense.addedBy.take(40),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp()
   )
@@ -1642,15 +2016,16 @@ object SeedDefaults {
   )
 
   val initialAppointments = listOf(
-    SyncedAppointmentItem(id = "apt_1", title = "Première visite prénatale & Échographie de datation", dateStr = "13 Nov 2026", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Confirmer l'âge gestationnel, détecter le battement cardiaque, bilan sanguin complet.", eventType = "Rendez-vous", dayOfMonth = 13L, monthIndex = 10L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_2", title = "Dépistage T1 (NIPT / Clarté Nucale)", dateStr = "13 Nov 2026", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Test ADN fœtal libre circulant pour la santé chromosomique et sexe fœtal.", eventType = "Rendez-vous", dayOfMonth = 13L, monthIndex = 10L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_3", title = "Échographie morphologique T2 détaillée", dateStr = "13 Nov 2026", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Examen structurel complet : cerveau, cœur, colonne, reins et placenta.", eventType = "Rendez-vous", dayOfMonth = 13L, monthIndex = 10L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_4", title = "Consultation Prénatale de Contrôle", dateStr = "13 Nov 2026", timeStr = "09:30", doctor = "Gynécologue Référent", location = "Maternité / Clinique", clinicalNotes = "Mesure de la hauteur utérine et contrôle de la tension artérielle.", eventType = "Rendez-vous", dayOfMonth = 13L, monthIndex = 10L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_5", title = "Consultation Prénatale de Synthèse", dateStr = "13 Nov 2026", timeStr = "09:30", doctor = "Dr. Laurent (Gynécologue)", location = "Maternité / Clinique", clinicalNotes = "Point sur les bilans sanguins du 1er trimestre.", eventType = "Rendez-vous", dayOfMonth = 13L, monthIndex = 10L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_6", title = "Dépistage du Diabète Gestationnel (HGPO)", dateStr = "20 Nov 2026", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Test au glucose 1h pour dépister le diabète gestationnel et bilan fer/anémie.", eventType = "Rendez-vous", dayOfMonth = 20L, monthIndex = 10L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_7", title = "Vaccination DTPca & Injection Rhophylac", dateStr = "04 Déc 2026", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Protection coqueluche transmise au bébé ; Rhophylac si Rhésus négatif.", eventType = "Rendez-vous", dayOfMonth = 4L, monthIndex = 11L, yearNum = 2026L),
-    SyncedAppointmentItem(id = "apt_8", title = "Prélèvement Dépistage Streptocoque B (SGB)", dateStr = "29 Jan 2027", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Prélèvement vaginal de routine pour anticiper l'antibioprophylaxie per-partum.", eventType = "Rendez-vous", dayOfMonth = 29L, monthIndex = 0L, yearNum = 2027L),
-    SyncedAppointmentItem(id = "apt_9", title = "Consultations prénatales hebdomadaires à terme", dateStr = "12 Fév 2027", timeStr = "08:08", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Surveillance du col, de la présentation fœtale, du bien-être et de la tension.", eventType = "Rendez-vous", dayOfMonth = 12L, monthIndex = 1L, yearNum = 2027L)
+    SyncedAppointmentItem(id = "apt_nov05", title = "Monitorages & Bilans (Cycle Start)", dateStr = "05 Nov 2026", timeStr = "08:00", doctor = "Dr. Anate Brauer", location = "Cabinet East Side (635 Madison Ave)", clinicalNotes = "Monitorage initial et début Estrace 2 mg PO AM & PM (2x/j).", eventType = "Rendez-vous", dayOfMonth = 5L, monthIndex = 10L, yearNum = 2026L),
+    SyncedAppointmentItem(id = "apt_nov12", title = "Monitorage de contrôle endomètre", dateStr = "12 Nov 2026", timeStr = "08:30", doctor = "Dr. Anate Brauer", location = "Cabinet East Side", clinicalNotes = "Échographie endomètre & bilan hormonal complétés.", eventType = "Rendez-vous", dayOfMonth = 12L, monthIndex = 10L, yearNum = 2026L),
+    SyncedAppointmentItem(id = "apt_nov17", title = "Monitoring pré-transfert", dateStr = "17 Nov 2026", timeStr = "09:30", doctor = "Dr. Anate Brauer", location = "Cabinet East Side", clinicalNotes = "Contrôle endomètre ≥ 7-8 mm & bilan hormonal complétés. Poursuite Estrace 2 mg TID + PIO 1 mL IM.", eventType = "Rendez-vous", dayOfMonth = 17L, monthIndex = 10L, yearNum = 2026L),
+    SyncedAppointmentItem(id = "apt_nov18", title = "🎯 Transfert d'Embryon Congelé (TEC 🥳🎉)", dateStr = "18 Nov 2026", timeStr = "14:00", doctor = "Dr. Anate Brauer / Alex", location = "Cabinet East Side / RMA Bloc", clinicalNotes = "Transfert d'Embryon Congelé (TEC) à 14h00 (02:00 PM EST) du blastocyste euploïde masculin. Vessie pleine, sans parfum.", eventType = "Rendez-vous", dayOfMonth = 18L, monthIndex = 10L, yearNum = 2026L),
+    SyncedAppointmentItem(id = "apt_nov20", title = "🩸 Progesterone Check (J2 post-TEC)", dateStr = "20 Nov 2026", timeStr = "09:30", doctor = "Laboratoire RMA", location = "Cabinet East Side", clinicalNotes = "Prise de sang de contrôle @ 9:30 AM (poursuite Estrace 2 mg TID + PIO 1.5 mL IM Daily).", eventType = "Rendez-vous", dayOfMonth = 20L, monthIndex = 10L, yearNum = 2026L),
+    SyncedAppointmentItem(id = "apt_nov27", title = "🩸 Prise de sang Bêta-hCG sérique #1 🤞", dateStr = "27 Nov 2026", timeStr = "09:30", doctor = "Laboratoire RMA", location = "Cabinet East Side", clinicalNotes = "Confirmation biologique de nidation @ 9:30 AM 🤞 (déblocage Maternité 2027).", eventType = "Rendez-vous", dayOfMonth = 27L, monthIndex = 10L, yearNum = 2026L),
+    SyncedAppointmentItem(id = "apt_ob1", title = "Échographie du 1er trimestre (T1) & DPNI", dateStr = "15 Jan 2027", timeStr = "09:30", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Échographie T1, clarté nucale et dépistage prénatal non invasif.", eventType = "Rendez-vous", dayOfMonth = 15L, monthIndex = 0L, yearNum = 2027L),
+    SyncedAppointmentItem(id = "apt_ob2", title = "Échographie morphologique T2", dateStr = "31 Mar 2027", timeStr = "10:00", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Échographie morphologique du 2e trimestre détaillée.", eventType = "Rendez-vous", dayOfMonth = 31L, monthIndex = 2L, yearNum = 2027L),
+    SyncedAppointmentItem(id = "apt_ob3", title = "Échographie du 3e trimestre (T3)", dateStr = "09 Juin 2027", timeStr = "10:30", doctor = "Dr. Laurent (OB/GYN)", location = "Centre de Santé Maternelle", clinicalNotes = "Biométrie fœtale et présentation.", eventType = "Rendez-vous", dayOfMonth = 9L, monthIndex = 5L, yearNum = 2027L),
+    SyncedAppointmentItem(id = "apt_ob4", title = "Terme & Accouchement (DPA : 6 août 2027)", dateStr = "06 Août 2027", timeStr = "08:00", doctor = "Équipe Maternité", location = "Maternité Hôpital", clinicalNotes = "Date prévue d'accouchement calculée à 40 SA (TEC J5 du 18 nov. 2026).", eventType = "Rendez-vous", dayOfMonth = 6L, monthIndex = 7L, yearNum = 2027L)
   )
 
   val initialDocuments = listOf(
@@ -1810,116 +2185,128 @@ object SeedDefaults {
       isCompleted = true, sortOrder = 14L
     ),
     SyncedProtocolStep(
-      id = "p2_8", phaseId = 2L, dateStr = "05 nov.",
-      stepName = "🩺 Contrôle de phase", medication = "Échographie + Bilan", dosage = "East Side",
-      status = "Complété", details = "Échographie de contrôle & Bilan biologique réalisés au cabinet East Side.",
+      id = "p2_8", phaseId = 2L, dateStr = "05–08 nov. (Cycle Start)",
+      stepName = "💊 Estrace 2 mg PO AM & PM", medication = "Estrace", dosage = "2 mg PO × 2/j (Matin & Soir)",
+      status = "Complété", details = "Contrôle de phase (Baseline monitoring & écho) et début de Estrace 2 mg PO AM & PM (2 fois par jour : Matin & Soir) du 05 au 08 nov.",
       isCompleted = true, sortOrder = 15L
     ),
     SyncedProtocolStep(
-      id = "p2_9", phaseId = 2L, dateStr = "06 nov. (Estrace Day 1)",
-      stepName = "💊 Début de l'Estrace 2 mg (Matin & Soir)", medication = "Estrace", dosage = "2 mg PO × 2/j",
-      status = "En cours", details = "Début de l'Estrace 2 mg par voie orale, 2 fois par jour (Matin & Soir) pour la préparation endométriale.",
-      isCompleted = false, isCriticalWindow = true, targetEpochMillis = defaultEstraceMillis, sortOrder = 16L
+      id = "p2_9", phaseId = 2L, dateStr = "09 nov.",
+      stepName = "💊 Augmentation Estrace (TID)", medication = "Estrace", dosage = "2 mg PO × 3/j (TID)",
+      status = "Complété", details = "Augmentation posologie — Estrace 2 mg PO TID (3 fois par jour : Matin, Midi & Soir) à compter du 09 nov.",
+      isCompleted = true, sortOrder = 16L
     ),
     SyncedProtocolStep(
-      id = "p2_10_today", phaseId = 2L, dateStr = "13 nov. (Aujourd'hui)",
-      stepName = "💉💊 Progestérone IM & Azithromycine (Aujourd'hui)", medication = "Progestérone + Azithromycine", dosage = "50 mg IM + 1 000 mg",
-      status = "Aujourd'hui", details = "Progestérone : Début des injections intramusculaires de Progestérone 1 mL (50 mg) dans la fesse, chaque soir à heure fixe.\nAntibiothérapie : Prise de 1 000 mg d'azithromycine (deux comprimés en une seule prise avec de la nourriture).",
-      isCompleted = false, isCriticalWindow = true, sortOrder = 17L
+      id = "p2_10", phaseId = 2L, dateStr = "12 nov.",
+      stepName = "🩺 Monitorage de contrôle", medication = "Échographie + Bilan", dosage = "Cabinet East Side",
+      status = "Complété", details = "Monitorage de contrôle complété (Échographie endomètre & bilan hormonal).",
+      isCompleted = true, sortOrder = 17L
     ),
     SyncedProtocolStep(
-      id = "p2_11", phaseId = 2L, dateStr = "17 nov.",
-      stepName = "🩺 Échographie endomètre & Bilan sanguin", medication = "Monitorage RMA", dosage = "≥ 7–8 mm",
-      status = "Planifié", details = "Vérification de l'épaisseur ≥ 7–8 mm, aspect trilaminaire, et suppression de la progestérone.",
-      isCompleted = false, sortOrder = 18L
+      id = "p2_11", phaseId = 2L, dateStr = "13 nov.",
+      stepName = "💉💊 Début PIO (Progestérone IM) & Azithromycine", medication = "Progestérone IM + Azithromycine", dosage = "1 mL IM + 1 000 mg PO",
+      status = "Complété", details = "Début des injections intramusculaires de Progestérone (PIO) 1 mL IM Daily chaque soir à heure fixe + prise unique de 1 000 mg d'Azithromycine PO avec de la nourriture.",
+      isCompleted = true, sortOrder = 18L
+    ),
+    SyncedProtocolStep(
+      id = "p2_12", phaseId = 2L, dateStr = "17 nov.",
+      stepName = "🩺 Monitoring pré-transfert (@ 9:30 AM)", medication = "Cabinet East Side", dosage = "9:30 AM",
+      status = "Complété", details = "Monitoring à 9:30 AM complété (Échographie de contrôle de l'endomètre ≥ 7–8 mm & bilan sanguin ; poursuite Estrace 2 mg TID + PIO 1 mL IM Daily).",
+      isCompleted = true, sortOrder = 19L
     ),
 
-    // Phase 3 : Transfert (TEC) & Suivi Précoce
+    // Phase 3 : Transfert (TEC) & Suivi Précoce (En cours)
     SyncedProtocolStep(
-      id = "p3_1", phaseId = 3L, dateStr = "18 nov.",
-      stepName = "🎯 Transfert d'Embryon Congelé (TEC)", medication = "Blastocyste euploïde M", dosage = "13h00–17h00",
-      status = "Prioritaire", details = "Transfert d'Embryon Congelé (TEC) du blastocyste euploïde masculin (Vessie pleine, sans parfum ; créneau 13h–17h ; heure exacte communiquée la veille).",
-      isCompleted = false, isCriticalWindow = true, sortOrder = 19L
+      id = "p3_1", phaseId = 3L, dateStr = "18 nov. (Aujourd'hui — Transfer Day 🥳🎉)",
+      stepName = "🎯 Transfert d'Embryon Congelé (TEC @ 14:00)", medication = "Blastocyste euploïde masculin", dosage = "02:00 PM EST",
+      status = "Aujourd'hui", details = "Embryo Transfer Surgery at 02:00 PM EST du blastocyste euploïde masculin (Vessie pleine, sans parfum ; poursuite Estrace 2 mg TID + PIO 1 mL IM Daily).",
+      isCompleted = false, isCriticalWindow = true, sortOrder = 20L
     ),
     SyncedProtocolStep(
-      id = "p3_2", phaseId = 3L, dateStr = "20 nov. (J2 post-TEC)",
-      stepName = "🩸 Prise de sang de contrôle post-transfert", medication = "Laboratoire RMA", dosage = "J2 post-TEC",
-      status = "Planifié", details = "Suivi hormonal précoce.",
-      isCompleted = false, sortOrder = 20L
+      id = "p3_2", phaseId = 3L, dateStr = "19 nov.",
+      stepName = "💉 Augmentation Progestérone (PIO 1.5 mL)", medication = "Progestérone IM", dosage = "1.5 mL Daily",
+      status = "Planifié", details = "Augmentation Progestérone — passage à PIO 1.5 mL IM Daily chaque soir (poursuite Estrace 2 mg TID).",
+      isCompleted = false, sortOrder = 21L
     ),
     SyncedProtocolStep(
-      id = "p3_3", phaseId = 3L, dateStr = "27 nov. (J9 post-TEC)",
-      stepName = "🩸 Test de grossesse / Bêta-hCG sérique #1", medication = "Bêta-hCG", dosage = "J9 post-TEC",
-      status = "Planifié", details = "Premier test de grossesse / Prise de sang Bêta-hCG sérique #1 (confirmation biologique de nidation).",
-      isCompleted = false, isCriticalWindow = true, sortOrder = 21L
-    ),
-    SyncedProtocolStep(
-      id = "p3_4", phaseId = 3L, dateStr = "Semaines 5–6",
-      stepName = "🩺 Échographie précoce 1", medication = "Échographie", dosage = "Cabinet RMA",
-      status = "Planifié", details = "Visualisation du sac gestationnel.",
+      id = "p3_3", phaseId = 3L, dateStr = "20 nov. (J2 post-TEC)",
+      stepName = "🩸 Progesterone Check (@ 9:30 AM)", medication = "Laboratoire RMA", dosage = "9:30 AM",
+      status = "Planifié", details = "Progesterone Check @ 9:30 AM (prise de sang de contrôle ; dosage susceptible d'être ajusté selon les résultats, poursuite Estrace 2 mg TID + PIO 1.5 mL IM Daily).",
       isCompleted = false, sortOrder = 22L
     ),
     SyncedProtocolStep(
-      id = "p3_5", phaseId = 3L, dateStr = "Semaines 7–8",
-      stepName = "🩺 Échographie précoce 2", medication = "Échographie", dosage = "Cabinet RMA",
-      status = "Planifié", details = "Vitalité fœtale et rythme cardiaque.",
-      isCompleted = false, sortOrder = 23L
+      id = "p3_4", phaseId = 3L, dateStr = "27 nov. (J9 post-TEC)",
+      stepName = "🩸 Pregnancy bloodwork (Bêta-hCG @ 9:30 AM 🤞)", medication = "Bêta-hCG sérique #1", dosage = "9:30 AM",
+      status = "Planifié", details = "Prise de sang Bêta-hCG sérique #1 @ 9:30 AM 🤞 (confirmation biologique de nidation et déblocage de la Phase 4 Maternité).",
+      isCompleted = false, isCriticalWindow = true, sortOrder = 23L
     ),
     SyncedProtocolStep(
-      id = "p3_6", phaseId = 3L, dateStr = "Semaines 8–10",
-      stepName = "🎉 Sevrage hormonal & Diplôme de sortie RMA", medication = "Transition OB/GYN", dosage = "Sortie RMA",
-      status = "Planifié", details = "Sevrage des traitements hormonaux & Transition / Diplôme de sortie RMA.",
+      id = "p3_5", phaseId = 3L, dateStr = "Semaines 5–6 (30 nov. – 13 déc. 2026)",
+      stepName = "🩺 Échographie précoce 1", medication = "Échographie RMA", dosage = "Sac gestationnel",
+      status = "Planifié", details = "Visualisation du sac gestationnel intra-utérin.",
       isCompleted = false, sortOrder = 24L
     ),
-
-    // Phase 4 : Suivi Obstétrical & Maternité
     SyncedProtocolStep(
-      id = "p4_1", phaseId = 4L, dateStr = "Semaines 11–13",
-      stepName = "🩺 Échographie T1 & DPNI", medication = "Dépistage T1", dosage = "DPNI",
-      status = "Planifié", details = "Échographie du 1er trimestre (T1) & DPNI (dépistage prénatal non invasif).",
+      id = "p3_6", phaseId = 3L, dateStr = "Semaines 7–8 (14 – 27 déc. 2026)",
+      stepName = "🩺 Échographie précoce 2", medication = "Échographie RMA", dosage = "Vitalité & Battement",
+      status = "Planifié", details = "Vitalité fœtale et rythme cardiaque.",
       isCompleted = false, sortOrder = 25L
     ),
     SyncedProtocolStep(
-      id = "p4_2", phaseId = 4L, dateStr = "Semaine 12",
-      stepName = "👩‍⚕️ Consultation prénatale", medication = "Obstétrique", dosage = "Suivi T1",
-      status = "Planifié", details = "Consultation prénatale.",
+      id = "p3_7", phaseId = 3L, dateStr = "Semaines 8–10 (Fin déc. 2026 – Début janv. 2027)",
+      stepName = "🎉 Sevrage hormonal & Diplôme de sortie RMA", medication = "Transition OB/GYN", dosage = "Sortie RMA",
+      status = "Planifié", details = "Sevrage des traitements hormonaux & Transition / Diplôme de sortie RMA.",
       isCompleted = false, sortOrder = 26L
     ),
+
+    // Phase 4 : Suivi Obstétrical & Maternité (En attente de confirmation le 27 nov. — Calendrier Prévisionnel 2027)
     SyncedProtocolStep(
-      id = "p4_3", phaseId = 4L, dateStr = "Semaines 18–20",
-      stepName = "👣 Premiers mouvements fœtaux ressentis", medication = "Suivi Clinique", dosage = "T2",
-      status = "Planifié", details = "Premiers mouvements fœtaux ressentis.",
+      id = "p4_1", phaseId = 4L, dateStr = "Semaines 11–13 (11 – 31 janv. 2027)",
+      stepName = "🩺 Échographie du 1er trimestre (T1) & DPNI", medication = "Dépistage T1", dosage = "Clarté nucale + DPNI",
+      status = "Planifié", details = "Échographie du 1er trimestre (T1) & DPNI (dépistage prénatal non invasif / clarté nucale).",
       isCompleted = false, sortOrder = 27L
     ),
     SyncedProtocolStep(
-      id = "p4_4", phaseId = 4L, dateStr = "Semaine 22",
-      stepName = "🩺 Échographie morphologique T2", medication = "Échographie", dosage = "2e trimestre",
-      status = "Planifié", details = "Échographie morphologique du 2e trimestre (T2).",
+      id = "p4_2", phaseId = 4L, dateStr = "Semaine 12 (18 – 24 janv. 2027)",
+      stepName = "👩‍⚕️ Consultation prénatale mensuelle", medication = "Obstétrique", dosage = "Suivi T1",
+      status = "Planifié", details = "Consultation prénatale mensuelle.",
       isCompleted = false, sortOrder = 28L
     ),
     SyncedProtocolStep(
-      id = "p4_5", phaseId = 4L, dateStr = "Semaines 24–28",
-      stepName = "🩸 Test HGPO", medication = "Laboratoire", dosage = "Diabète gest.",
-      status = "Planifié", details = "Dépistage du diabète gestationnel.",
+      id = "p4_3", phaseId = 4L, dateStr = "Semaines 18–20 (1er – 21 mars 2027)",
+      stepName = "👣 Premiers mouvements fœtaux ressentis", medication = "Clinique", dosage = "T2",
+      status = "Planifié", details = "Premiers mouvements fœtaux ressentis.",
       isCompleted = false, sortOrder = 29L
     ),
     SyncedProtocolStep(
-      id = "p4_6", phaseId = 4L, dateStr = "Semaine 32",
-      stepName = "🩺 Échographie T3", medication = "Échographie", dosage = "3e trimestre",
-      status = "Planifié", details = "Échographie du 3e trimestre (T3).",
+      id = "p4_4", phaseId = 4L, dateStr = "Semaine 22 (29 mars – 4 avr. 2027)",
+      stepName = "🩺 Échographie morphologique du 2e trimestre (T2)", medication = "Échographie", dosage = "Morphologie T2",
+      status = "Planifié", details = "Échographie morphologique du 2e trimestre (T2).",
       isCompleted = false, sortOrder = 30L
     ),
     SyncedProtocolStep(
-      id = "p4_7", phaseId = 4L, dateStr = "Semaine 36",
-      stepName = "🏥 Bilan pré-accouchement & consultation d'anesthésie", medication = "Maternité", dosage = "Pré-accouchement",
-      status = "Planifié", details = "Bilan pré-accouchement & consultation d'anesthésie.",
+      id = "p4_5", phaseId = 4L, dateStr = "Semaines 24–28 (12 avr. – 16 mai 2027)",
+      stepName = "🩸 Test HGPO (dépistage diabète gestationnel)", medication = "Laboratoire", dosage = "HGPO",
+      status = "Planifié", details = "Test HGPO (dépistage du diabète gestationnel).",
       isCompleted = false, sortOrder = 31L
     ),
     SyncedProtocolStep(
-      id = "p4_8", phaseId = 4L, dateStr = "Semaines 37–41",
-      stepName = "👶 Terme & Accouchement", medication = "Maternité", dosage = "Terme",
-      status = "Planifié", details = "Terme & Accouchement.",
-      isCompleted = false, isCriticalWindow = true, sortOrder = 32L
+      id = "p4_6", phaseId = 4L, dateStr = "Semaine 32 (7 – 13 juin 2027)",
+      stepName = "🩺 Échographie du 3e trimestre (T3)", medication = "Échographie", dosage = "Biométrie T3",
+      status = "Planifié", details = "Échographie du 3e trimestre (T3).",
+      isCompleted = false, sortOrder = 32L
+    ),
+    SyncedProtocolStep(
+      id = "p4_7", phaseId = 4L, dateStr = "Semaine 36 (5 – 11 juil. 2027)",
+      stepName = "🏥 Bilan pré-accouchement & consultation d'anesthésie", medication = "Maternité", dosage = "Anesthésie + SGB",
+      status = "Planifié", details = "Bilan pré-accouchement & consultation d'anesthésie (+ dépistage Streptocoque B).",
+      isCompleted = false, sortOrder = 33L
+    ),
+    SyncedProtocolStep(
+      id = "p4_8", phaseId = 4L, dateStr = "Semaines 37–41 (16 juil. – 13 août 2027)",
+      stepName = "👶 Terme & Accouchement (DPA : 6 août 2027)", medication = "Maternité", dosage = "40 SA : 6 août 2027",
+      status = "Planifié", details = "Terme & Accouchement (Date prévue d'accouchement à 40 SA : 6 août 2027).",
+      isCompleted = false, isCriticalWindow = true, sortOrder = 34L
     )
   )
 

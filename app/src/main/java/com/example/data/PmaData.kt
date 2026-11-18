@@ -8,7 +8,8 @@ data class TaskItem(
   val details: String = "",
   var isCompleted: Boolean = false,
   val hasAlarm: Boolean = false,
-  val alarmTimeMinutesBefore: Int = 15 // e.g. 0 (at time), 15, 60 (1 hr), 1440 (1 day)
+  val alarmTimeMinutesBefore: Int = 15, // e.g. 0 (at time), 15, 60 (1 hr), 1440 (1 day)
+  val addedBy: String = "Fatou"
 )
 
 data class PhaseSection(
@@ -47,6 +48,9 @@ object PmaRepository {
   val surgicalCenter = "Gramercy Surgery Center (380 2nd Avenue, Suite 1000)"
   val objective = "Transfert d'Embryon Congelé (TEC) — Blastocyste euploïde masculin"
 
+  val theoreticalDueDate = "Mercredi 6 août 2027"
+  val theoreticalDueDateNote = "DPA calculée à 40 SA (basée sur un transfert de blastocyste J5 le 18 novembre 2026)"
+
   val immediateTasks = listOf(
     TaskItem(
       id = "t1",
@@ -78,8 +82,8 @@ object PmaRepository {
     ),
     TaskItem(
       id = "t4",
-      title = "🔬 Échographie de contrôle & Bilan biologique",
-      date = "05 nov.",
+      title = "🔬 Monitorages & Bilans",
+      date = "05 nov. & 12 nov.",
       category = "Cabinet East Side",
       details = "Réalisés au cabinet East Side.",
       isCompleted = true,
@@ -88,13 +92,23 @@ object PmaRepository {
     ),
     TaskItem(
       id = "t5",
-      title = "📅 Confirmation de la date du TEC",
-      date = "18 nov.",
+      title = "🩺 Monitorage pré-transfert",
+      date = "17 nov.",
+      category = "Cabinet East Side",
+      details = "Réalisé à 9h30 AM.",
+      isCompleted = true,
+      hasAlarm = false,
+      alarmTimeMinutesBefore = 15
+    ),
+    TaskItem(
+      id = "t6",
+      title = "📅 Confirmation du TEC",
+      date = "18 nov. (Aujourd'hui)",
       category = "Transfert TEC",
-      details = "Planifié pour le 18 novembre (créneau généralement fixé entre 13h00 et 17h00 ; l'heure exacte et les instructions seront communiquées la veille).",
+      details = "Aujourd'hui à 14h00 (02:00 PM EST) 🥳🎉.",
       isCompleted = false,
       hasAlarm = true,
-      alarmTimeMinutesBefore = 1440
+      alarmTimeMinutesBefore = 120
     )
   )
 
@@ -176,21 +190,32 @@ object PmaRepository {
 
   val clinicalInstructions = listOf(
     ClinicalInstruction(
-      topic = "Protocole Estrace 2 mg PO (AM & PM)",
-      subtitle = "Begin Estrace 2 mg PO twice daily (AM and PM)",
+      topic = "Mémo Posologies : Estrace 2 mg PO (TID)",
+      subtitle = "Estrace 2 mg PO 3x/jour (Matin, Midi, Soir)",
       instructions = listOf(
-        "Posologie : Prendre 1 comprimé d'Estrace 2 mg par voie orale le matin (AM) et 1 comprimé le soir (PM) à heures régulières.",
-        "Objectif : Épaississement de l'endomètre (> 8 mm) et obtention d'un aspect trilaminaire avant l'introduction de la progestérone.",
-        "Continuité : Ne jamais sauter ou interrompre une prise d'Estrace sans accord préalable du Dr. Brauer."
+        "Posologie : 1 comprimé d'Estrace 2 mg par voie orale 3 fois par jour (Matin 08h00, Midi 14h00, Soir 20h00 en continu).",
+        "Historique : Débuté à 2 mg PO 2x/j du 05 au 08 nov., augmenté à 3x/j (TID) depuis le 09 nov.",
+        "Continuité : Poursuivre à heures régulières sans interruption."
       ),
       alertType = "Medication"
     ),
     ClinicalInstruction(
-      topic = "Jour du Transfert (TEC)",
-      subtitle = "Conditions préalables obligatoires",
+      topic = "Mémo Posologies : Progestérone IM (PIO)",
+      subtitle = "Injections intramusculaires quotidiennes le soir",
       instructions = listOf(
-        "Vessie pleine : Boire 750ml à 1L d'eau 45 à 60 minutes avant l'intervention (facilite le guidage échographique transabdominal).",
-        "Sans parfum ni lotion : Ne porter aucun produit cosmétique parfumé le jour du transfert afin de protéger la viabilité des blastocystes."
+        "17 & 18 nov. : 1.0 mL IM une fois par jour le soir (à 20h00).",
+        "À partir du 19 nov. : Augmentation à 1.5 mL IM une fois par jour le soir.",
+        "20 nov. : Progesterone Check @ 9:30 AM (dosage susceptible d'être réajusté selon résultats sériques)."
+      ),
+      alertType = "Medication"
+    ),
+    ClinicalInstruction(
+      topic = "Jour du Transfert (TEC — 18 nov. à 14h00)",
+      subtitle = "Aujourd'hui — Transfer Day 🥳🎉",
+      instructions = listOf(
+        "Vessie pleine : Boire 750ml à 1L d'eau 45 à 60 minutes avant le geste à 14h00 (02:00 PM EST).",
+        "Strictement sans parfum : Ni parfum, déodorant parfumé ni crème pour préserver l'embryon euploïde.",
+        "Traitements : Poursuivre rigoureusement Estrace 2 mg TID + PIO 1 mL IM."
       ),
       alertType = "Critical"
     ),
